@@ -1,0 +1,13 @@
+{
+  "site_url": "sc-domain:example.com",
+  "service_account_dir": "accounts",
+  "daily_quota_per_account": 200,
+  "inspect_daily_quota": 2000,
+  "concurrency": 4,
+  "batch_size": 100,
+  "inspect_before_submit": true,
+  "resubmit_after_days": 14,
+  "request_timeout": 45,
+  "max_retries": 4,
+  "port": 8765
+}

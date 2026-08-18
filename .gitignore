@@ -1,0 +1,12 @@
+accounts/*.json
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/oauth_client.json
+config.json
+__pycache__/
+*.pyc
+.venv/
+.claude/
+.vscode/
+*.log
