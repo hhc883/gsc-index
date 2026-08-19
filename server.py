@@ -14,7 +14,7 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-from fastapi import Body, FastAPI, UploadFile
+from fastapi import Body, FastAPI, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from gscindex import config as config_mod
@@ -149,7 +149,10 @@ def index():
 
 @app.get("/favicon.ico")
 def favicon():
-    return JSONResponse({}, status_code=204)
+    # 204 表示"无内容"，响应体必须为空。
+    # 之前返回 JSONResponse({}) 会带上 "{}" 作为响应体，与 Content-Length 声明冲突，
+    # 浏览器每次请求 favicon 都会在服务端抛 LocalProtocolError。
+    return Response(status_code=204)
 
 
 # --------------------------------------------------------------------------
