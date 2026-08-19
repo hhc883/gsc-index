@@ -22,9 +22,9 @@ TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v3/userinfo"
 REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
 
-# 前两个是干活用的，后两个只为在界面上显示"你授权的是哪个邮箱"
+# 第一个是干活用的（查站点/查收录/交站点地图），后两个只为在界面上显示"你授权的是哪个邮箱"。
+# 已移除 indexing 权限——Indexing API 不在本项目里了。
 SCOPES = [
-    "https://www.googleapis.com/auth/indexing",
     "https://www.googleapis.com/auth/webmasters",
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",

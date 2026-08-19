@@ -18,7 +18,7 @@ from fastapi import Body, FastAPI, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from gscindex import config as config_mod
-from gscindex import oauth, sources
+from gscindex import oauth, sources, webauto
 from gscindex.auth import KIND_OAUTH, AccountPool
 from gscindex.runner import Engine
 from gscindex.store import Store
@@ -57,6 +57,8 @@ class Job:
         self.result: dict | None = None
         self.error = ""
         self.progress = {"phase": "", "done": 0, "total": 0}
+        # 网页自动化任务可能跑很久（每条都要开浏览器），需要能中途停下
+        self.stop_flag = threading.Event()
         self._lock = threading.Lock()
         self._subs: list[queue.Queue] = []
 
@@ -124,7 +126,14 @@ def start_job(kind: str, fn) -> Job:
 
     def run():
         try:
-            job.result = fn(job.emit)
+            # 统一成 fn(emit, stop_flag)。老的只收 emit 的回调也照样能用，
+            # 免得为了这一个参数把所有既有端点都改一遍。
+            try:
+                job.result = fn(job.emit, job.stop_flag)
+            except TypeError as exc:
+                if "positional argument" not in str(exc):
+                    raise
+                job.result = fn(job.emit)
             job.status = "done"
         except Exception as exc:  # 任何异常都要让前端看见
             job.status = "error"
@@ -184,6 +193,8 @@ def api_stats():
         **store.stats(),
         "daily": store.daily_series(14),
         "failures": store.failure_reasons(8),
+        # 分来源统计，用来对比"网页自动化"和已移除的"旧 Indexing API"的实际效果
+        "sources": store.source_breakdown(),
     }
 
 
@@ -288,8 +299,8 @@ def api_oauth_status():
                 "name": a.name,
                 "email": a.email,
                 "project_id": a.project_id,
-                "submit_used": store.quota_used(a.submit_scope),
-                "submit_limit": cfg.daily_quota_per_account,
+                "inspect_used": store.quota_used(a.inspect_scope),
+                "inspect_limit": cfg.inspect_daily_quota,
             }
             for a in pool.accounts
             if a.kind == KIND_OAUTH
@@ -434,7 +445,7 @@ def api_analyze(body: dict = Body(...)):
     text = body.get("text") or ""
     urls = body.get("urls") or []
     site = (body.get("site_url") or cfg.site_url).strip()
-    do_inspect = bool(body.get("inspect", cfg.inspect_before_submit))
+    do_inspect = bool(body.get("inspect", True))
     force = bool(body.get("force", False))
     account = (body.get("account") or "").strip()
 
@@ -454,22 +465,102 @@ def api_analyze(body: dict = Body(...)):
     return {"job_id": start_job("analyze", run).id}
 
 
-@app.post("/api/submit")
-def api_submit(body: dict = Body(...)):
+@app.post("/api/scan")
+def api_scan(body: dict = Body(...)):
+    """全站扫描：抓站点地图 -> 批量预检 -> 未收录的进待办池。"""
+    site = (body.get("site_url") or cfg.site_url).strip()
+    sitemap = (body.get("sitemap_url") or "").strip()
+    account = (body.get("account") or "").strip()
+    limit = int(body.get("limit") or cfg.scan_limit or 0)
+    if not site:
+        return JSONResponse({"error": "请先选择站点"}, status_code=400)
+    if not sitemap:
+        return JSONResponse({"error": "请填写站点地图地址"}, status_code=400)
+
+    def run(emit, _stop):
+        return engine.scan(site, sitemap, account_name=account, limit=limit, emit=emit)
+
+    return {"job_id": start_job("scan", run).id}
+
+
+@app.get("/api/pending")
+def api_pending(site_url: str = "", include_done: bool = False):
+    """待办池：未收录且还没交上去的 URL 清单，跨天保留。"""
+    site = site_url or cfg.site_url
+    return {
+        "rows": store.pending_list(site, include_done=include_done),
+        "counts": store.pending_counts(),
+        "webauto": engine.webauto_overview(site),
+    }
+
+
+@app.post("/api/webauto/submit")
+def api_webauto_submit(body: dict = Body(...)):
+    """把选中的 URL 交给浏览器自动化，逐个去 GSC 网页点“请求编入索引”。"""
     urls = body.get("urls") or []
     site = (body.get("site_url") or cfg.site_url).strip()
-    notif = "URL_DELETED" if body.get("delete") else "URL_UPDATED"
-    account = (body.get("account") or "").strip()
+    if not site:
+        return JSONResponse({"error": "请先选择站点"}, status_code=400)
+    if not urls:
+        return JSONResponse({"error": "没有要提交的 URL"}, status_code=400)
+    if not webauto.has_session(cfg.webauto_session_path):
+        return JSONResponse(
+            {"error": "还没有浏览器登录，请先到「账号管理」完成一次浏览器登录"},
+            status_code=400,
+        )
 
-    def run(emit):
-        return engine.submit(urls, site, notif_type=notif, account_name=account, emit=emit)
+    def run(emit, stop_flag):
+        return engine.webauto_submit(
+            site, urls, emit=emit, should_stop=stop_flag.is_set
+        )
 
-    return {"job_id": start_job("submit", run).id}
+    return {"job_id": start_job("webauto", run).id}
+
+
+@app.get("/api/webauto/status")
+def api_webauto_status(site_url: str = ""):
+    return engine.webauto_overview(site_url or cfg.site_url)
+
+
+@app.post("/api/webauto/login")
+def api_webauto_login():
+    """打开本机真实 Chrome，由用户本人手动登录 Google 账号。"""
+    def run(emit, _stop):
+        emit({"type": "log", "level": "info",
+              "message": "已打开浏览器窗口，请在里面用你自己的 Google 账号登录……"})
+        ok, msg = webauto.bootstrap_login(cfg.webauto_session_path)
+        emit({"type": "log", "level": "success" if ok else "error", "message": msg})
+        return {"ok": ok, "message": msg}
+
+    return {"job_id": start_job("webauto_login", run).id}
+
+
+@app.delete("/api/webauto/login")
+def api_webauto_logout():
+    """清除浏览器登录状态。整个配置目录删掉才算真正登出。"""
+    import shutil
+
+    cfg.webauto_session_path.unlink(missing_ok=True)
+    prof = webauto.profile_dir(cfg.webauto_session_path)
+    if prof.exists():
+        webauto.kill_stale_browsers(prof)  # 先清进程，否则目录被占着删不掉
+        shutil.rmtree(prof, ignore_errors=True)
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------
 # 任务查询与 SSE
 # --------------------------------------------------------------------------
+
+
+@app.post("/api/job/{job_id}/stop")
+def api_job_stop(job_id: str):
+    """请求停止任务。网页自动化一条条跑、可能很久，必须能中途叫停。"""
+    job = JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "任务不存在"}, status_code=404)
+    job.stop_flag.set()
+    return {"ok": True}
 
 
 @app.get("/api/job/{job_id}")

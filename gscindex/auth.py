@@ -18,11 +18,9 @@ from google.oauth2.credentials import Credentials as UserCredentials
 
 from . import oauth
 
-# 服务账号一次授权拿全，Indexing 和 Search Console 共用同一个 token
-SCOPES = [
-    "https://www.googleapis.com/auth/indexing",
-    "https://www.googleapis.com/auth/webmasters",
-]
+# 只需要 Search Console 的权限。Indexing API 已从本项目移除，
+# 所以不再申请 indexing 权限——授权时少一项勾选。
+SCOPES = ["https://www.googleapis.com/auth/webmasters"]
 
 KIND_SERVICE = "service_account"
 KIND_OAUTH = "oauth_user"
@@ -40,7 +38,7 @@ AUTH_HINTS = [
     ("invalid jwt signature",
      "密钥签名校验失败。JSON 文件可能损坏或被改动过，请重新下载原始密钥。"),
     ("invalid_scope",
-     "授权范围被拒绝。请确认该 GCP 项目已经启用 Indexing API 和 Search Console API。"),
+     "授权范围被拒绝。请确认该 GCP 项目已经启用 Search Console API。"),
     ("unauthorized_client",
      "该客户端未获授权，请检查服务账号是否被停用。"),
     ("invalid jwt",
@@ -59,8 +57,7 @@ OAUTH_HINTS = [
     ("invalid_client",
      "OAuth 客户端凭据无效。请重新下载客户端 JSON 并上传，然后重新授权。"),
     ("invalid_scope",
-     "授权范围被拒绝。请确认该 GCP 项目已启用 Indexing API 和 Search Console API，"
-     "然后重新授权。"),
+     "授权范围被拒绝。请确认该 GCP 项目已启用 Search Console API，然后重新授权。"),
 ]
 
 NETWORK_HINTS = ("timed out", "connection", "max retries", "getaddrinfo", "ssl", "proxy")
@@ -99,10 +96,6 @@ class Credential:
     @property
     def kind_cn(self) -> str:
         return KIND_CN.get(self.kind, self.kind)
-
-    @property
-    def submit_scope(self) -> str:
-        return "submit:" + self.name
 
     @property
     def inspect_scope(self) -> str:
@@ -272,32 +265,21 @@ class AccountPool:
 
     # ---------- 配额 ----------
 
-    def submit_remaining(self, account: Credential, limit: int) -> int:
-        return max(0, limit - self.store.quota_used(account.submit_scope))
-
     def inspect_remaining(self, account: Credential, limit: int) -> int:
         return max(0, limit - self.store.quota_used(account.inspect_scope))
-
-    def total_submit_remaining(self, limit: int) -> int:
-        return sum(self.submit_remaining(a, limit) for a in self.accounts)
 
     def total_inspect_remaining(self, limit: int) -> int:
         return sum(self.inspect_remaining(a, limit) for a in self.accounts)
 
-    def plan_submit(
+    def plan_inspect(
         self, count: int, limit: int, accounts: list[Credential] | None = None
     ) -> list[tuple[Credential, int]]:
-        """把 count 个 URL 按各凭据今日剩余配额切分，返回 [(凭据, 配额数), ...]。
+        """把 count 次预检按各凭据今日剩余配额切分，返回 [(凭据, 配额数), ...]。
 
         配额在这一步就原子扣掉，避免并发重复占用；实际没用完的由调用方退还。
         传 accounts 时只在这个子集里分配——调用方应该只传真正对目标站点有权限的凭据，
         否则配额会被没有权限的账号占掉，导致整批必然失败（曾经的真实 bug）。
         """
-        return self._plan(count, limit, lambda a: a.submit_scope, accounts)
-
-    def plan_inspect(
-        self, count: int, limit: int, accounts: list[Credential] | None = None
-    ) -> list[tuple[Credential, int]]:
         return self._plan(count, limit, lambda a: a.inspect_scope, accounts)
 
     def _plan(

@@ -1,6 +1,10 @@
-"""引擎层：账号自检、提交前分析、批量提交调度。
+"""引擎层：账号自检、全站扫描、收录预检、网页自动化提交调度。
 
 所有耗时操作都通过 on_event 回调向外吐进度，Web 层据此推 SSE。
+
+两条链路性质不同，别混淆：
+* api.py     —— Google 官方开放接口（查站点、查收录、交站点地图），配额充裕
+* webauto.py —— 自动化操作 GSC 网页点“请求编入索引”，灰色地带、名额稀缺
 """
 
 from __future__ import annotations
@@ -8,7 +12,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
-from . import api, sources
+from . import api, sources, webauto
 from .auth import KIND_OAUTH, AccountPool, AuthError
 from .config import Config
 from .store import Store
@@ -71,8 +75,6 @@ class Engine:
                     "sites": [],
                     "permission": "",
                     "is_owner": False,
-                    "submit_used": 0,
-                    "submit_limit": self.cfg.daily_quota_per_account,
                     "inspect_used": 0,
                     "inspect_limit": self.cfg.inspect_daily_quota,
                 }
@@ -90,8 +92,6 @@ class Engine:
                 "sites": [],
                 "permission": "",
                 "is_owner": False,
-                "submit_used": self.store.quota_used(acc.submit_scope),
-                "submit_limit": self.cfg.daily_quota_per_account,
                 "inspect_used": self.store.quota_used(acc.inspect_scope),
                 "inspect_limit": self.cfg.inspect_daily_quota,
             }
@@ -455,163 +455,176 @@ class Engine:
                     emit({"type": "progress", "phase": "inspect", "done": done, "total": total})
 
     # ------------------------------------------------------------------
-    # 提交
+    # 全站扫描：抓站点地图 -> 批量预检 -> 未收录的进待办池
     # ------------------------------------------------------------------
 
-    def submit(
+    def scan(
         self,
-        urls: list[str],
         site_url: str,
+        sitemap_url: str,
         *,
-        notif_type: str = "URL_UPDATED",
         account_name: str = "",
+        limit: int = 0,
         emit: Emit = _noop,
     ) -> dict:
-        urls = sources.dedupe([u for u in (sources.normalize(u) for u in urls) if u])
-        if not urls:
-            return {"ok": 0, "failed": 0, "skipped": 0, "results": []}
+        """一步走完“发现全站 URL -> 查哪些没收录 -> 存进待办池”。
 
-        # 直接提交（跳过分析）的 URL 也要入库，否则重复提交保护和统计都会漏掉它们
-        for u in urls:
-            self.store.seen(u, site_url)
+        这是整个工具的核心动作。预检配额（2000/天/凭据）相对充裕，
+        所以这一步可以放心扫几百上千条；真正稀缺的是后面网页点击的名额，
+        所以这里的产出是一份待办清单，供之后分多天慢慢消化。
+        """
+        emit({"type": "log", "level": "info", "message": "开始抓取站点地图 " + sitemap_url})
 
-        if not self.pool.accounts:
-            emit({"type": "log", "level": "error", "message": "accounts/ 里没有可用的服务账号密钥"})
-            return {"ok": 0, "failed": 0, "skipped": len(urls), "results": [], "error": "无可用账号"}
+        def progress(current, found):
+            emit({"type": "log", "level": "info",
+                  "message": f"读取 {current}（已收集 {found} 条）"})
 
-        eligible, diag = self.eligible_accounts(site_url, require_owner=True, account_name=account_name)
-        if not eligible:
-            detail = "；".join(
-                name + "（" + (email or "无邮箱") + "）：" + msg for name, email, msg in diag
-            )
-            scope = ("指定账号「" + account_name + "」") if account_name else "任何凭据"
-            emit(
-                {
-                    "type": "log",
-                    "level": "error",
-                    "message": "没有" + scope + "对「" + site_url + "」拥有所有者权限，无法提交。" + detail,
-                }
-            )
-            return {
-                "ok": 0,
-                "failed": 0,
-                "skipped": len(urls),
-                "results": [],
-                "error": "没有凭据对该站点拥有所有者权限",
-            }
+        try:
+            urls, visited, errors = sources.fetch_sitemap(sitemap_url, on_progress=progress)
+        except sources.SourceError as exc:
+            emit({"type": "log", "level": "error", "message": str(exc)})
+            return {"error": str(exc), "found": 0, "pending": 0}
 
-        plan = self.pool.plan_submit(len(urls), self.cfg.daily_quota_per_account, eligible)
-        granted = sum(n for _, n in plan)
+        for e in errors:
+            emit({"type": "log", "level": "warn", "message": e})
+        if not visited:
+            emit({"type": "log", "level": "error",
+                  "message": "一个站点地图文件都没读到，请检查上面的报错"})
+            return {"error": "站点地图读取失败", "found": 0, "pending": 0}
+
+        emit({"type": "log", "level": "success",
+              "message": f"站点地图读到 {len(visited)} 个文件、{len(urls)} 条 URL"})
+
+        # 只保留属于这个 GSC 属性的 URL，其余提交必然失败，没必要浪费预检配额
+        match = sources.site_matcher(site_url)
+        onsite = [u for u in urls if match(u)]
+        if len(onsite) < len(urls):
+            emit({"type": "log", "level": "warn",
+                  "message": f"{len(urls) - len(onsite)} 条不属于所选站点，已排除"})
+        if limit and len(onsite) > limit:
+            emit({"type": "log", "level": "info",
+                  "message": f"按设置只处理前 {limit} 条（共 {len(onsite)} 条）"})
+            onsite = onsite[:limit]
+        if not onsite:
+            return {"error": "没有属于该站点的 URL", "found": 0, "pending": 0}
+
+        # 借用已有的 analyze：它会做去重、预检、并把结果写进 urls 表
+        res = self.analyze(
+            onsite, site_url, do_inspect=True, force=True,
+            account_name=account_name, emit=emit,
+        )
+
+        # 未收录的进待办池；已确认收录的从待办池里划掉
+        added = resolved = unknown = 0
+        for row in res["rows"]:
+            if row["state"] == STATE_INDEXED:
+                self.store.pending_resolve(row["url"])
+                resolved += 1
+            elif row["state"] == STATE_UNKNOWN:
+                unknown += 1  # 预检没查成，状态不明，先不入池免得误导
+            elif row["state"] == STATE_PENDING:
+                self.store.pending_upsert(
+                    site_url, row["url"], row["coverage"], row["verdict"]
+                )
+                added += 1
+
+        msg = f"扫描完成：未收录 {added} 条已进待办池，已收录 {resolved} 条"
+        if unknown:
+            msg += f"，{unknown} 条预检失败未入池"
+        emit({"type": "log", "level": "success", "message": msg})
+        return {
+            "found": len(onsite), "pending": added,
+            "resolved": resolved, "unknown": unknown,
+            "site_url": site_url,
+        }
+
+    # ------------------------------------------------------------------
+    # 网页自动化提交（点 GSC 网页上的“请求编入索引”）
+    # ------------------------------------------------------------------
+
+    def webauto_submit(
+        self, site_url: str, urls: list[str], *, emit: Emit = _noop, should_stop=None
+    ) -> dict:
+        """逐个 URL 去 GSC 网页点“请求编入索引”。
+
+        跟 API 提交不同，这条路一次只能处理一个 URL、每次都要开浏览器，
+        而且 Google 那边的每日上限不明（撞到“超出了配额”就是到顶了）。
+        所以这里是串行 + 随机间隔，不做并发。
+        """
+        if not webauto.has_session(self.cfg.webauto_session_path):
+            emit({"type": "log", "level": "error",
+                  "message": "还没有浏览器登录，请先到「账号管理」完成一次浏览器登录"})
+            return {"ok": 0, "failed": 0, "skipped": len(urls), "error": "未登录浏览器"}
+
+        limit = self.cfg.webauto_daily_limit
+        used = self.store.webauto_used(site_url)
+        emit({"type": "log", "level": "info",
+              "message": f"开始处理 {len(urls)} 条。{site_url} 今日已用 {used}/{limit} 次"})
+
+        ok = failed = skipped = 0
         results: list[dict] = []
+        total = len(urls)
+        emit({"type": "progress", "phase": "webauto", "done": 0, "total": total})
 
-        if granted < len(urls):
-            emit(
-                {
-                    "type": "log",
-                    "level": "warn",
-                    "message": f"今日提交配额只剩 {granted} 条，本次提交前 {granted} 条，"
-                    f"其余 {len(urls) - granted} 条请明天再来",
-                }
+        for i, url in enumerate(urls):
+            if should_stop and should_stop():
+                emit({"type": "log", "level": "warn", "message": "已手动停止"})
+                break
+
+            if not self.store.webauto_take(site_url, limit):
+                results.append({"url": url, "status": "local_limit",
+                                "message": f"本地每日上限 {limit} 已用完"})
+                emit({"type": "log", "level": "warn",
+                      "message": f"本地每日上限已用完，剩下 {total - i} 条留到明天"})
+                skipped += total - i
+                break
+
+            res = webauto.request_indexing(
+                self.cfg.webauto_session_path, site_url, url,
+                headless=self.cfg.webauto_headless,
             )
-            for u in urls[granted:]:
-                results.append({"url": u, "ok": False, "status": 0, "message": "今日配额不足，未提交", "account": ""})
-        if not granted:
-            return {
-                "ok": 0,
-                "failed": 0,
-                "skipped": len(urls),
-                "results": results,
-                "error": "今日配额已用尽",
-            }
+            # 只有真的递交出去才占名额；其余情况一律退还，
+            # 否则一次网络抖动就白吃掉一个本来就稀缺的名额
+            if not res.ok:
+                self.store.webauto_refund(site_url)
 
-        # 按账号切分，再按 batch_size 分片
-        chunks: list[tuple] = []
-        cursor = 0
-        for acc, n in plan:
-            mine = urls[cursor : cursor + n]
-            cursor += n
-            size = max(1, min(100, self.cfg.batch_size))
-            for i in range(0, len(mine), size):
-                chunks.append((acc, mine[i : i + size]))
-
-        total = granted
-        emit({"type": "progress", "phase": "submit", "done": 0, "total": total})
-        emit(
-            {
-                "type": "log",
-                "level": "info",
-                "message": f"开始提交 {total} 条，分 {len(chunks)} 批，动用 {len(plan)} 个账号",
-            }
-        )
-        done = 0
-
-        def work(item):
-            acc, batch = item
-            try:
-                token = acc.token()
-            except AuthError as exc:
-                return acc, batch, [api.UrlResult(u, False, 0, str(exc)) for u in batch]
-            return acc, batch, api.publish_batch(
-                token,
-                batch,
-                notif_type,
-                timeout=self.cfg.request_timeout,
-                max_retries=self.cfg.max_retries,
+            self.store.log(
+                "webauto", url, "webauto",
+                200 if res.ok else 0, res.message, source="webauto",
             )
+            self.store.pending_mark_requested(url, res.status)
+            results.append({"url": url, "status": res.status, "message": res.message})
 
-        with ThreadPoolExecutor(max_workers=max(1, self.cfg.concurrency)) as ex:
-            for fut in as_completed([ex.submit(work, c) for c in chunks]):
-                acc, batch, batch_results = fut.result()
-                refund = 0
-                for res in batch_results:
-                    done += 1
-                    self.store.mark_submitted(res.url, "OK" if res.ok else "ERR " + str(res.status))
-                    # 成功也记一笔，历史统计的趋势图依赖完整日志
-                    self.store.log(acc.name, res.url, "publish", res.status, res.message)
-                    if not res.ok and res.status in (0, 401, 403, 429):
-                        # 这几类失败 Google 并未消耗配额，退还
-                        refund += 1
-                    results.append(
-                        {
-                            "url": res.url,
-                            "ok": res.ok,
-                            "status": res.status,
-                            "message": res.message,
-                            "account": acc.name,
-                        }
-                    )
-                if refund:
-                    self.store.quota_refund(acc.submit_scope, refund)
-                bad = [r for r in batch_results if not r.ok]
-                if bad:
-                    emit(
-                        {
-                            "type": "log",
-                            "level": "error",
-                            "message": f"{acc.name} 批次 {len(batch)} 条中 {len(bad)} 条失败："
-                            + bad[0].message[:140],
-                        }
-                    )
-                else:
-                    emit(
-                        {
-                            "type": "log",
-                            "level": "success",
-                            "message": f"{acc.name} 成功提交 {len(batch)} 条",
-                        }
-                    )
-                emit({"type": "progress", "phase": "submit", "done": done, "total": total})
+            if res.status == "challenge":
+                emit({"type": "log", "level": "error",
+                      "message": "触发 Google 安全验证，已停止整批：" + res.message})
+                emit({"type": "log", "level": "error",
+                      "message": "请重新走一遍浏览器登录（可能要手动过一次验证）再继续。"})
+                skipped += total - i - 1
+                break
+            if res.status == "quota_exceeded":
+                emit({"type": "log", "level": "warn",
+                      "message": f"Google 侧已达上限，停止本批：{res.message}"})
+                skipped += total - i - 1
+                break
+            if res.ok:
+                ok += 1
+                emit({"type": "log", "level": "success", "message": f"{url} → {res.message}"})
+            else:
+                failed += 1
+                emit({"type": "log", "level": "error",
+                      "message": f"{url} 失败（未占用名额）：{res.message}"})
 
-        ok = sum(1 for r in results if r["ok"])
-        failed = sum(1 for r in results if not r["ok"])
-        emit(
-            {
-                "type": "log",
-                "level": "success" if failed == 0 else "warn",
-                "message": f"提交完成：成功 {ok} 条，失败 {failed} 条",
-            }
-        )
-        return {"ok": ok, "failed": failed, "skipped": 0, "results": results}
+            emit({"type": "progress", "phase": "webauto", "done": i + 1, "total": total})
+            if i < total - 1 and not (should_stop and should_stop()):
+                webauto.random_delay(
+                    self.cfg.webauto_min_delay, self.cfg.webauto_max_delay
+                )
+
+        emit({"type": "log", "level": "success" if ok else "warn",
+              "message": f"结束：成功 {ok} 条，失败 {failed} 条，跳过 {skipped} 条"})
+        return {"ok": ok, "failed": failed, "skipped": skipped, "results": results,
+                "used_today": self.store.webauto_used(site_url), "limit": limit}
 
     # ------------------------------------------------------------------
     # 站点地图
@@ -656,6 +669,11 @@ class Engine:
     # ------------------------------------------------------------------
 
     def quota_overview(self) -> dict:
+        """配额概览。
+
+        只剩下收录预检这一种 API 配额了（Indexing API 已移除）。
+        网页点击的名额是按站点算的、跟凭据无关，所以单独由 webauto_overview 提供。
+        """
         accounts = []
         for acc in self.pool.accounts:
             accounts.append(
@@ -664,16 +682,29 @@ class Engine:
                     "email": acc.email,
                     "kind": acc.kind,
                     "kind_cn": acc.kind_cn,
-                    "submit_used": self.store.quota_used(acc.submit_scope),
-                    "submit_limit": self.cfg.daily_quota_per_account,
                     "inspect_used": self.store.quota_used(acc.inspect_scope),
                     "inspect_limit": self.cfg.inspect_daily_quota,
                 }
             )
         return {
             "accounts": accounts,
-            "submit_used": sum(a["submit_used"] for a in accounts),
-            "submit_limit": len(accounts) * self.cfg.daily_quota_per_account,
             "inspect_used": sum(a["inspect_used"] for a in accounts),
             "inspect_limit": len(accounts) * self.cfg.inspect_daily_quota,
+        }
+
+    def webauto_overview(self, site_url: str = "") -> dict:
+        """网页点击名额概览：本地闸门用掉多少、还剩多少。
+
+        注意这只是本地记账。Google 那边的真实上限不明，可能比这个更严，
+        所以“还剩 N 次”是乐观估计，实际可能提前撞上“超出了配额”。
+        """
+        limit = self.cfg.webauto_daily_limit
+        site = site_url or self.cfg.site_url
+        used = self.store.webauto_used(site) if site else 0
+        return {
+            "site_url": site,
+            "used": used,
+            "limit": limit,
+            "left": max(0, limit - used),
+            "logged_in": webauto.has_session(self.cfg.webauto_session_path),
         }

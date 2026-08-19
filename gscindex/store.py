@@ -1,4 +1,14 @@
-"""SQLite 状态存储：URL 历史、每日配额、操作日志。"""
+"""SQLite 状态存储：URL 历史、待办池、每日配额、操作日志。
+
+表的职责划分：
+* urls        —— 每个 URL 的历史（何时预检过、收录状态、提交过几次）
+* pending     —— 未收录待办池，跨天持久化。真实的网页提交名额很有限，
+                 一次扫描出的几十上百条未收录 URL 要分好几天才交得完，
+                 所以必须存下来，而不是每次扫完就丢。
+* quota       —— 按天计的 API 配额（现在只剩收录预检，Indexing API 已移除）
+* webauto_day —— 网页自动化每个站点每天点了几次"请求编入索引"
+* log         —— 操作流水，source 区分是旧的 Indexing API 还是网页自动化
+"""
 
 from __future__ import annotations
 
@@ -34,8 +44,26 @@ CREATE TABLE IF NOT EXISTS log (
     status  INTEGER,
     message TEXT
 );
+CREATE TABLE IF NOT EXISTS pending (
+    url          TEXT PRIMARY KEY,
+    site         TEXT NOT NULL,
+    coverage     TEXT,
+    verdict      TEXT,
+    found_at     TEXT NOT NULL,
+    requested_at TEXT,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    last_result  TEXT,
+    done_at      TEXT
+);
+CREATE TABLE IF NOT EXISTS webauto_day (
+    site TEXT NOT NULL,
+    day  TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site, day)
+);
 CREATE INDEX IF NOT EXISTS idx_log_ts ON log(ts);
 CREATE INDEX IF NOT EXISTS idx_urls_submitted ON urls(last_submitted);
+CREATE INDEX IF NOT EXISTS idx_pending_site ON pending(site, done_at);
 """
 
 
@@ -56,7 +84,22 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """轻量迁移：老库缺的列补上，不动已有数据。
+
+        source 列用来区分历史记录的来源：老的 Indexing API 时代的记录没有这个值，
+        统一回填成 indexing_api；之后网页自动化产生的记录标 webauto。
+        这样历史统计里能把两种方式的实际效果分开看。
+        """
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(log)")}
+        if "source" not in cols:
+            self.conn.execute("ALTER TABLE log ADD COLUMN source TEXT")
+            self.conn.execute(
+                "UPDATE log SET source = 'indexing_api' WHERE source IS NULL"
+            )
 
     # ---------- URL ----------
 
@@ -159,12 +202,114 @@ class Store:
         action: str,
         status: int | None,
         message: str = "",
+        source: str = "webauto",
     ) -> None:
         with self._lock:
             self.conn.execute(
-                "INSERT INTO log (ts, account, url, action, status, message) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (_now(), account, url, action, status, message[:500]),
+                "INSERT INTO log (ts, account, url, action, status, message, source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (_now(), account, url, action, status, message[:500], source),
+            )
+            self.conn.commit()
+
+    # ---------- 待办池（未收录清单，跨天持久化） ----------
+
+    def pending_upsert(self, site: str, url: str, coverage: str, verdict: str) -> None:
+        """把一条未收录 URL 放进待办池；已存在的只刷新收录状态，保留提交历史。"""
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO pending (url, site, coverage, verdict, found_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(url) DO UPDATE SET
+                     coverage = excluded.coverage,
+                     verdict  = excluded.verdict,
+                     site     = excluded.site""",
+                (url, site, coverage, verdict, _now()),
+            )
+            self.conn.commit()
+
+    def pending_resolve(self, url: str) -> None:
+        """这条 URL 已经确认收录了，标记完成并移出待办。"""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE pending SET done_at = ? WHERE url = ? AND done_at IS NULL",
+                (_now(), url),
+            )
+            self.conn.commit()
+
+    def pending_mark_requested(self, url: str, result: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                """UPDATE pending
+                   SET requested_at = ?, request_count = request_count + 1,
+                       last_result = ?
+                   WHERE url = ?""",
+                (_now(), result, url),
+            )
+            self.conn.commit()
+
+    def pending_list(self, site: str = "", include_done: bool = False) -> list[dict]:
+        where, params = [], []
+        if site:
+            where.append("site = ?")
+            params.append(site)
+        if not include_done:
+            where.append("done_at IS NULL")
+        sql = "SELECT * FROM pending"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        # 从没交过的排最前面——名额有限，优先花在这些上
+        sql += " ORDER BY (requested_at IS NOT NULL), found_at"
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def pending_counts(self) -> list[dict]:
+        """按站点汇总待办情况，给界面做概览。"""
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT site,
+                          COUNT(*) AS total,
+                          SUM(CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END) AS never,
+                          SUM(CASE WHEN requested_at IS NOT NULL THEN 1 ELSE 0 END) AS waiting
+                   FROM pending WHERE done_at IS NULL
+                   GROUP BY site ORDER BY site"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------- 网页自动化的每日点击计数 ----------
+
+    def webauto_used(self, site: str) -> int:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT used FROM webauto_day WHERE site = ? AND day = ?",
+                (site, today_key()),
+            ).fetchone()
+            return row["used"] if row else 0
+
+    def webauto_take(self, site: str, limit: int) -> bool:
+        """原子地申请一次点击名额，成功返回 True。"""
+        with self._lock:
+            day = today_key()
+            row = self.conn.execute(
+                "SELECT used FROM webauto_day WHERE site = ? AND day = ?", (site, day)
+            ).fetchone()
+            if (row["used"] if row else 0) >= limit:
+                return False
+            self.conn.execute(
+                """INSERT INTO webauto_day (site, day, used) VALUES (?, ?, 1)
+                   ON CONFLICT(site, day) DO UPDATE SET used = used + 1""",
+                (site, day),
+            )
+            self.conn.commit()
+            return True
+
+    def webauto_refund(self, site: str) -> None:
+        """这次没真正交出去，把名额退回来。"""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE webauto_day SET used = MAX(0, used - 1) "
+                "WHERE site = ? AND day = ?",
+                (site, today_key()),
             )
             self.conn.commit()
 
@@ -187,28 +332,56 @@ class Store:
                 "SELECT ts, url, action, status, message FROM log "
                 "ORDER BY id DESC LIMIT 15"
             ).fetchall()
+        with self._lock:
+            pending_open = self.conn.execute(
+                "SELECT COUNT(*) c FROM pending WHERE done_at IS NULL"
+            ).fetchone()["c"]
+            pending_never = self.conn.execute(
+                "SELECT COUNT(*) c FROM pending "
+                "WHERE done_at IS NULL AND requested_at IS NULL"
+            ).fetchone()["c"]
         return {
             "total": total,
             "submitted": submitted,
             "indexed": indexed,
+            "pending_open": pending_open,
+            "pending_never": pending_never,
             "quota_today": [dict(r) for r in today],
             "recent": [dict(r) for r in recent],
         }
 
     def daily_series(self, days: int = 14) -> list[dict]:
-        """最近 N 天的提交量（成功/失败），用于趋势图。"""
+        """最近 N 天的提交量（成功/失败），用于趋势图。
+
+        同时把两种来源分开：webauto 是现在真正在用的网页自动化，
+        indexing_api 是已移除的旧通道的历史遗留，放在一起看会误导。
+        """
         with self._lock:
             rows = self.conn.execute(
                 """SELECT substr(ts, 1, 10) AS d,
                           SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) AS ok,
-                          SUM(CASE WHEN status <> 200 THEN 1 ELSE 0 END) AS fail
-                   FROM log WHERE action = 'publish'
+                          SUM(CASE WHEN status <> 200 THEN 1 ELSE 0 END) AS fail,
+                          SUM(CASE WHEN source = 'webauto' THEN 1 ELSE 0 END) AS webauto,
+                          SUM(CASE WHEN source = 'indexing_api' THEN 1 ELSE 0 END) AS legacy
+                   FROM log WHERE action IN ('publish', 'webauto')
                    GROUP BY d ORDER BY d DESC LIMIT ?""",
                 (days,),
             ).fetchall()
         series = [dict(r) for r in rows]
         series.reverse()
         return series
+
+    def source_breakdown(self) -> list[dict]:
+        """按来源统计成败，用来对比两种方式的实际效果。"""
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT COALESCE(source, 'indexing_api') AS source,
+                          COUNT(*) AS total,
+                          SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END) AS ok
+                   FROM log WHERE action IN ('publish', 'webauto')
+                   GROUP BY COALESCE(source, 'indexing_api')"""
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def failure_reasons(self, limit: int = 8) -> list[dict]:
         """失败原因分布，按 HTTP 状态码归类。"""

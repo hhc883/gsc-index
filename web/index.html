@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GSC 索引提交器</title>
+<title>GSC 收录助手</title>
 <style>
 :root{
   --bg:#f5f6f8; --panel:#ffffff; --panel2:#fafbfc; --border:#e2e5ea; --border2:#eef0f3;
   --text:#1a1d23; --muted:#6b7280; --faint:#9aa3af;
   --accent:#2563eb; --accent-soft:#eff4ff;
   --ok:#15803d; --ok-soft:#eaf7ee; --warn:#b45309; --warn-soft:#fef6e7;
-  --err:#c02626; --err-soft:#fdeded; --shadow:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.06);
+  --err:#c02626; --err-soft:#fdeded;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.06);
 }
 @media (prefers-color-scheme:dark){
   :root{
@@ -23,16 +24,14 @@
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
-body{
-  background:var(--bg); color:var(--text); font:14px/1.55 -apple-system,BlinkMacSystemFont,
-  "Segoe UI","Microsoft YaHei","PingFang SC",Roboto,Helvetica,Arial,sans-serif;
-  -webkit-font-smoothing:antialiased;
-}
+body{background:var(--bg);color:var(--text);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
 a{color:var(--accent)}
 .wrap{max-width:1180px;margin:0 auto;padding:0 20px 60px}
 
 /* ---------- 顶栏 ---------- */
-header{background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:30}
+header{background:var(--panel);border-bottom:1px solid var(--border)}
 .hbar{max-width:1180px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .logo{font-weight:650;font-size:15px;letter-spacing:.2px;display:flex;align-items:center;gap:8px;white-space:nowrap}
 .logo .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
@@ -40,6 +39,8 @@ header{background:var(--panel);border-bottom:1px solid var(--border);position:st
 .sitepick{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .pickrow{display:flex;align-items:center;gap:8px}
 .sitepick label{color:var(--muted);font-size:12.5px;white-space:nowrap}
+.sitesel{min-width:220px;max-width:100%}
+.acctsel{min-width:200px;max-width:100%}
 
 /* ---------- 配额条 ---------- */
 .quota{max-width:1180px;margin:0 auto;padding:0 20px 12px;display:flex;gap:22px;flex-wrap:wrap;align-items:center}
@@ -49,8 +50,7 @@ header{background:var(--panel);border-bottom:1px solid var(--border);position:st
 .qbar{height:6px;border-radius:4px;background:var(--border2);overflow:hidden}
 .qfill{height:100%;background:var(--accent);border-radius:4px;transition:width .35s ease}
 .qfill.hot{background:var(--warn)} .qfill.full{background:var(--err)}
-.qaccs{font-size:11.5px;color:var(--faint);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap}
-.qaccs span{white-space:nowrap}
+.qnote{font-size:11.5px;color:var(--faint);margin-top:5px}
 .tip{display:inline-block;padding:0 5px;border-radius:9px;background:var(--border2);color:var(--faint);
   font-size:10.5px;cursor:help;vertical-align:1px;font-weight:500}
 .tip:hover{background:var(--accent-soft);color:var(--accent)}
@@ -83,22 +83,13 @@ button,select,input,textarea{font-family:inherit;font-size:13.5px}
 select,input[type=text],input[type=number],input[type=url]{
   padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--panel);color:var(--text);outline:none}
 select:focus,input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-textarea{width:100%;padding:11px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel);
-  color:var(--text);resize:vertical;min-height:150px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
-  font-size:12.5px;line-height:1.6;outline:none}
 label.chk{display:inline-flex;align-items:center;gap:7px;cursor:pointer;user-select:none;font-size:13px}
 label.chk input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;margin:0}
 .hint{color:var(--muted);font-size:12.5px}
-
-/* ---------- 来源切换 ---------- */
-.segs{display:inline-flex;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:3px;gap:2px}
-.seg{padding:6px 13px;border:0;background:none;color:var(--muted);border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit}
-.seg.on{background:var(--panel);color:var(--text);font-weight:600;box-shadow:var(--shadow)}
-.drop{border:1.5px dashed var(--border);border-radius:9px;padding:30px 20px;text-align:center;color:var(--muted);
-  cursor:pointer;transition:.15s;background:var(--panel2)}
-.drop:hover,.drop.over{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.drop{border:1.5px dashed var(--border);border-radius:9px;padding:26px 20px;text-align:center;
+  color:var(--muted);cursor:pointer;transition:.15s;background:var(--panel2)}
+.drop:hover{border-color:var(--accent);color:var(--accent)}
 .drop b{display:block;color:var(--text);font-size:13.5px;margin-bottom:3px;font-weight:600}
-.drop.over b{color:var(--accent)}
 
 /* ---------- 统计小片 ---------- */
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
@@ -117,27 +108,28 @@ th{position:sticky;top:0;background:var(--panel2);text-align:left;padding:9px 11
 td{padding:8px 11px;border-bottom:1px solid var(--border2);vertical-align:top}
 tbody tr:last-child td{border-bottom:0}
 tbody tr:hover{background:var(--panel2)}
-td.u{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all;max-width:440px}
+td.u{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all;max-width:420px}
 td.c{width:38px;text-align:center}
 td.c input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;margin:0}
 .pill{display:inline-block;padding:2px 8px;border-radius:11px;font-size:11.5px;white-space:nowrap;font-weight:550}
-.p-pending{background:var(--accent-soft);color:var(--accent)}
-.p-indexed{background:var(--ok-soft);color:var(--ok)}
-.p-recent{background:var(--warn-soft);color:var(--warn)}
-.p-offsite,.p-err{background:var(--err-soft);color:var(--err)}
+.p-ok,.p-success,.p-already_done,.p-indexed{background:var(--ok-soft);color:var(--ok)}
+.p-never,.p-pending{background:var(--accent-soft);color:var(--accent)}
+.p-waiting,.p-recent,.p-quota_exceeded,.p-local_limit{background:var(--warn-soft);color:var(--warn)}
+.p-err,.p-error,.p-challenge,.p-offsite,.p-no_session{background:var(--err-soft);color:var(--err)}
 .p-unknown{background:var(--border2);color:var(--muted)}
 .note{color:var(--faint);font-size:11.5px;margin-top:2px}
+.num{font-variant-numeric:tabular-nums}
 .prop{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;
   padding:2px 0;word-break:break-all;color:var(--muted)}
 .prop.active{color:var(--text);font-weight:600}
-.num{font-variant-numeric:tabular-nums}
 
 /* ---------- 进度与日志 ---------- */
 .pbar{height:7px;border-radius:5px;background:var(--border2);overflow:hidden;margin:10px 0 6px}
 .pfill{height:100%;background:var(--accent);border-radius:5px;transition:width .25s ease;width:0}
 .ptext{font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between}
 .console{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;
-  max-height:230px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.75;margin-top:12px}
+  max-height:250px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:12px;line-height:1.75;margin-top:12px}
 .console div{padding:1px 0;word-break:break-word}
 .l-info{color:var(--muted)} .l-success{color:var(--ok)} .l-warn{color:var(--warn)} .l-error{color:var(--err)}
 .console .t{color:var(--faint);margin-right:7px}
@@ -147,17 +139,32 @@ td.c input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;marg
 .stat{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:14px 16px}
 .stat .k{color:var(--muted);font-size:12px;margin-bottom:5px}
 .stat .v{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.15}
-.stat .v small{font-size:13px;color:var(--muted);font-weight:400;margin-left:3px}
 
-/* ---------- 设置表单 ---------- */
-.form{display:grid;grid-template-columns:220px 1fr;gap:13px 18px;align-items:center;max-width:660px}
+/* ---------- 设置 ---------- */
+.form{display:grid;grid-template-columns:230px 1fr;gap:13px 18px;align-items:center;max-width:680px}
 .form .lbl{color:var(--muted);font-size:13px}
 .form .lbl b{display:block;color:var(--text);font-weight:550;font-size:13.5px;margin-bottom:1px}
 
-.sitesel{min-width:220px;max-width:100%}
-.acctsel{min-width:200px;max-width:100%}
+/* ---------- 其他 ---------- */
+.toast{position:fixed;right:20px;bottom:20px;z-index:99;display:flex;flex-direction:column;gap:8px}
+.toast div{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);
+  border-radius:8px;padding:11px 15px;box-shadow:0 4px 14px rgba(16,24,40,.14);font-size:13px;max-width:400px;
+  animation:sl .22s ease}
+.toast div.ok{border-left-color:var(--ok)} .toast div.err{border-left-color:var(--err)}
+@keyframes sl{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+.empty{text-align:center;padding:38px 20px;color:var(--faint);font-size:13px}
+.banner{padding:10px 13px;border-radius:8px;font-size:13px;margin-bottom:14px;border:1px solid transparent;line-height:1.7}
+.banner.warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn)}
+.banner.err{background:var(--err-soft);color:var(--err);border-color:var(--err)}
+.banner.info{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+.hide{display:none !important}
+code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+ol.steps{margin:0;padding-left:20px;color:var(--muted);font-size:13px;line-height:1.9}
+ol.steps b{color:var(--text)}
+.loginbox{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 12px;
+  border:1px solid var(--border);border-radius:8px;background:var(--panel2);margin-top:8px;font-size:12.5px}
 
-/* ---------- 窄屏 ---------- */
 @media (max-width:680px){
   .wrap,.hbar,.quota,.tabs{padding-left:14px;padding-right:14px}
   .hbar{gap:10px}
@@ -170,34 +177,17 @@ td.c input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;marg
   .stats{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
   td.u{max-width:none}
 }
-
-/* ---------- 提示条 ---------- */
-.toast{position:fixed;right:20px;bottom:20px;z-index:99;display:flex;flex-direction:column;gap:8px}
-.toast div{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);
-  border-radius:8px;padding:11px 15px;box-shadow:0 4px 14px rgba(16,24,40,.14);font-size:13px;max-width:400px;
-  animation:sl .22s ease}
-.toast div.ok{border-left-color:var(--ok)} .toast div.err{border-left-color:var(--err)}
-@keyframes sl{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
-.empty{text-align:center;padding:38px 20px;color:var(--faint);font-size:13px}
-.banner{padding:10px 13px;border-radius:8px;font-size:13px;margin-bottom:14px;border:1px solid transparent}
-.banner.warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn)}
-.banner.err{background:var(--err-soft);color:var(--err);border-color:var(--err)}
-.hide{display:none !important}
-code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px;
-  font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
-ol.steps{margin:0;padding-left:20px;color:var(--muted);font-size:13px;line-height:1.9}
-ol.steps b{color:var(--text)}
 </style>
 </head>
 <body>
 
 <header>
   <div class="hbar">
-    <div class="logo"><span class="dot"></span>GSC 索引提交器</div>
+    <div class="logo"><span class="dot"></span>GSC 收录助手</div>
     <div class="spacer"></div>
     <div class="sitepick">
       <div class="pickrow">
-        <label for="acct">使用账号</label>
+        <label for="acct">查询用账号</label>
         <select id="acct" class="acctsel"><option value="">自动（按站点权限分派）</option></select>
       </div>
       <div class="pickrow">
@@ -210,119 +200,144 @@ ol.steps b{color:var(--text)}
   <div class="quota">
     <div class="qitem">
       <div class="qhead">
-        <span>今日提交配额 <span class="tip" id="qsTag" title="配额按 GCP 项目计算，不按站点计算。你名下所有站点共用这个额度。要提量请新建 GCP 项目并添加对应的服务账号密钥。">共享</span></span>
-        <span><b id="qsU">0</b> / <b id="qsL">0</b></span>
+        <span>今日收录查询配额
+          <span class="tip" id="qiTag" title="URL Inspection API，每个凭据每天 2000 次。用来查哪些页面还没被收录，配额充裕，可以放心扫全站。">充裕</span>
+        </span>
+        <span><b id="qiU">0</b> / <b id="qiL">0</b></span>
       </div>
-      <div class="qbar"><div class="qfill" id="qsF"></div></div>
-      <div class="qaccs" id="qsA"></div>
+      <div class="qbar"><div class="qfill" id="qiF"></div></div>
+      <div class="qnote" id="qiA"></div>
     </div>
     <div class="qitem">
-      <div class="qhead"><span>今日预检配额</span><span><b id="qiU">0</b> / <b id="qiL">0</b></span></div>
-      <div class="qbar"><div class="qfill" id="qiF"></div></div>
+      <div class="qhead">
+        <span>当前站点今日申请名额
+          <span class="tip" title="这是本地设的保守闸门。Google 那边真实的每日上限从未公开，实际可能比这个更严——撞上「超出了配额」就是当天到顶了。">稀缺</span>
+        </span>
+        <span><b id="qwU">0</b> / <b id="qwL">0</b></span>
+      </div>
+      <div class="qbar"><div class="qfill" id="qwF"></div></div>
+      <div class="qnote" id="qwA"></div>
     </div>
   </div>
 </header>
 
 <nav><div class="tabs">
-  <button class="tab on" data-p="submit">提交索引</button>
+  <button class="tab on" data-p="scan">扫描与提交</button>
+  <button class="tab" data-p="pending">未收录清单</button>
   <button class="tab" data-p="accounts">账号管理</button>
-  <button class="tab" data-p="inspect">收录查询</button>
   <button class="tab" data-p="stats">历史统计</button>
   <button class="tab" data-p="settings">设置</button>
 </div></nav>
 
 <div class="wrap">
 
-<!-- ============ 提交索引 ============ -->
-<section id="p-submit">
+<!-- ============ 扫描与提交 ============ -->
+<section id="p-scan">
   <div class="banner err hide" id="noAcc">
-    还没有可用的服务账号。请先到「账号管理」上传服务账号密钥，否则无法提交。
+    还没有可用的查询凭据。请先到「账号管理」完成 OAuth 登录，否则无法查询收录状态。
+  </div>
+  <div class="banner err hide" id="noWebLogin">
+    还没有完成浏览器登录，<b>无法申请收录</b>。请到「账号管理」页第②节完成一次浏览器登录。
   </div>
   <div class="banner warn hide" id="siteWarn"></div>
 
   <div class="card">
-    <h2>URL 来源</h2>
-    <p class="sub">支持从站点地图自动抓取、直接粘贴，或拖入 .txt 文件。</p>
-    <div class="segs" style="margin-bottom:14px">
-      <button class="seg on" data-src="sitemap">站点地图抓取</button>
-      <button class="seg" data-src="paste">粘贴列表</button>
-      <button class="seg" data-src="file">上传文件</button>
+    <h2>第一步：扫描全站，找出没被收录的页面</h2>
+    <p class="sub">
+      从站点地图抓出全部 URL，再用官方接口逐个查收录状态。这一步用的是充裕的查询配额，
+      可以放心扫；未收录的结果会存进待办池，跨天保留。
+    </p>
+    <div class="row">
+      <input type="url" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" style="flex:1;min-width:280px">
+      <button class="btn primary" id="btnScan">开始扫描</button>
+      <button class="btn" id="btnSubmitSitemap">顺便把站点地图交给 GSC</button>
     </div>
-
-    <div id="src-sitemap">
-      <div class="row">
-        <input type="url" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" style="flex:1;min-width:280px">
-        <button class="btn" id="btnFetchSitemap">抓取 URL</button>
-        <button class="btn" id="btnSubmitSitemap">提交此站点地图给 GSC</button>
-      </div>
-      <p class="hint" style="margin:9px 0 0">
-        已按当前选中的站点自动填充，地址不对可以直接改。
-        自动识别 sitemap index 与 .gz 压缩，最多递归 3 层、60 个文件。
-      </p>
-    </div>
-
-    <div id="src-paste" class="hide">
-      <textarea id="urlText" placeholder="每行一个 URL，例如：&#10;https://example.com/page-1&#10;https://example.com/page-2&#10;&#10;以 # 开头的行会被忽略"></textarea>
-    </div>
-
-    <div id="src-file" class="hide">
-      <div class="drop" id="dropUrls">
-        <b>把 .txt 文件拖到这里</b>
-        或点击选择文件（每行一个 URL）
-      </div>
-      <input type="file" id="fileUrls" accept=".txt,.csv,text/plain" multiple class="hide">
-    </div>
-
-    <div class="row" style="margin-top:15px;gap:18px">
-      <label class="chk"><input type="checkbox" id="optInspect" checked>提交前预检收录状态<span class="hint">（省配额，推荐）</span></label>
-      <label class="chk"><input type="checkbox" id="optForce">忽略重复提交保护</label>
-      <label class="chk"><input type="checkbox" id="optDelete">提交为「删除」通知</label>
-    </div>
-
-    <div class="row" style="margin-top:15px">
-      <button class="btn primary" id="btnAnalyze">分析</button>
-      <button class="btn" id="btnDirect">跳过分析，直接提交</button>
-      <span class="hint" id="loaded"></span>
-    </div>
+    <p class="hint" style="margin:9px 0 0">
+      已按当前选中的站点自动填充，地址不对可以直接改。自动识别 sitemap index 嵌套与 .gz 压缩。
+    </p>
   </div>
 
   <div class="card hide" id="jobCard">
     <h2 id="jobTitle">进行中</h2>
     <div class="pbar"><div class="pfill" id="jobFill"></div></div>
     <div class="ptext"><span id="jobPhase"></span><span class="num" id="jobCount"></span></div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn sm danger hide" id="btnStopJob">停止</button>
+    </div>
     <div class="console" id="jobLog"></div>
   </div>
 
-  <div class="card hide" id="resCard">
-    <h2>分析结果</h2>
-    <p class="sub" id="resSub"></p>
-    <div class="chips" id="resChips"></div>
+  <div class="card">
+    <h2>第二步：挑几条去申请收录</h2>
+    <p class="sub" id="scanPendSub">当前站点的未收录清单。名额稀缺，建议优先挑重要的页面。</p>
+    <div class="chips" id="pendChips"></div>
     <div class="row" style="margin-bottom:11px">
-      <button class="btn sm" id="selAll">全选可提交</button>
+      <button class="btn sm" id="selTop">按剩余名额自动勾选</button>
       <button class="btn sm" id="selNone">全不选</button>
       <button class="btn sm" id="expCsv">导出 CSV</button>
       <div class="spacer"></div>
-      <button class="btn primary" id="btnSubmitSel">提交选中 0 条</button>
+      <button class="btn primary" id="btnRequest" disabled>申请收录（选中 0 条）</button>
     </div>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
         <th class="c"><input type="checkbox" id="thAll"></th>
-        <th>URL</th><th style="width:120px">状态</th>
-        <th style="width:150px">Google 收录情况</th><th style="width:110px">上次提交</th>
+        <th>URL</th><th style="width:150px">Google 收录情况</th>
+        <th style="width:120px">申请状态</th><th style="width:110px">上次申请</th>
       </tr></thead>
-      <tbody id="resBody"></tbody>
+      <tbody id="pendBody"><tr><td colspan="5"><div class="empty">先扫描一次，或到「未收录清单」看其他站点</div></td></tr></tbody>
     </table></div></div>
-    <p class="hint" id="resMore" style="margin:9px 0 0"></p>
+    <p class="hint" id="pendMore" style="margin:9px 0 0"></p>
+  </div>
+</section>
+
+<!-- ============ 未收录清单 ============ -->
+<section id="p-pending" class="hide">
+  <div class="card">
+    <h2>各站点待办概览</h2>
+    <p class="sub">
+      跨天保留的待办池。每个站点每天能申请的次数很有限，这份清单让你分多天慢慢消化，
+      已确认收录的会在下次扫描时自动移出。
+    </p>
+    <div class="row" style="margin-bottom:12px">
+      <button class="btn sm" id="btnReloadPend">刷新</button>
+      <label class="chk"><input type="checkbox" id="pendIncludeDone">显示已完成的</label>
+    </div>
+    <div class="tbox"><div class="tscroll"><table>
+      <thead><tr>
+        <th>站点</th><th style="width:100px">待办总数</th>
+        <th style="width:110px">从未申请</th><th style="width:130px">已申请待观察</th><th style="width:90px"></th>
+      </tr></thead>
+      <tbody id="pendSiteBody"><tr><td colspan="5"><div class="empty">还没有待办，先去扫描</div></td></tr></tbody>
+    </table></div></div>
+  </div>
+
+  <div class="card">
+    <h2>全部待办明细</h2>
+    <p class="sub" id="allPendSub"></p>
+    <div class="tbox"><div class="tscroll"><table>
+      <thead><tr>
+        <th>站点</th><th>URL</th><th style="width:140px">收录情况</th>
+        <th style="width:110px">申请状态</th><th style="width:105px">上次申请</th>
+      </tr></thead>
+      <tbody id="allPendBody"><tr><td colspan="5"><div class="empty">（空）</div></td></tr></tbody>
+    </table></div></div>
+    <p class="hint" id="allPendMore" style="margin:9px 0 0"></p>
   </div>
 </section>
 
 <!-- ============ 账号管理 ============ -->
 <section id="p-accounts" class="hide">
+  <div class="banner info">
+    这个工具需要<b>两套登录</b>，各管一件事，都要配一次：<br>
+    ① <b>OAuth 登录</b>——走 Google 官方接口，用来查站点列表和查收录状态。<br>
+    ② <b>浏览器登录</b>——Google 没有开放"请求编入索引"的接口，只能自动操作网页点按钮，所以需要一份真实的浏览器登录。
+  </div>
+
   <div class="card">
-    <h2>用我的 Google 账号登录 <span class="pill p-indexed">多站点推荐</span></h2>
+    <h2>① OAuth 登录 <span class="pill p-ok">查询用</span></h2>
     <p class="sub">
-      以你本人身份调用 API。你这个 Google 账号名下的全部 GSC 属性自动可用，
-      <b>不需要在任何站点里添加权限</b>，也不会污染站点的用户列表。新增站点同样零操作。
+      以你本人身份调用官方接口。你这个 Google 账号名下的全部 GSC 属性自动可用，
+      <b>不需要在任何站点里添加权限</b>。
     </p>
 
     <div id="oauthSetup">
@@ -343,108 +358,76 @@ ol.steps b{color:var(--text)}
         已在新标签页打开 Google 授权页，完成后这里会自动刷新…
       </div>
     </div>
-
-    <div id="oauthAccounts" style="margin-top:14px"></div>
-
-    <p class="hint" style="margin:14px 0 0">
+    <div id="oauthAccounts"></div>
+    <p class="hint" style="margin:12px 0 0">
       回调地址 <code id="oauthRedirect">http://127.0.0.1:8765/oauth/callback</code>
-      —— 客户端类型选「桌面应用」的话它自动被接受，不用手工登记。
+      —— 客户端类型选「桌面应用」就自动接受，不用手工登记。
     </p>
     <div class="banner warn" style="margin:12px 0 0">
-      务必把 GCP 的「OAuth 同意屏幕」发布状态改成<b>「正式版 / In production」</b>。
-      停在「测试中」的话授权令牌只有 7 天有效期，你得每周重新授权一次。
-      个人使用不需要提交审核，首次授权时点掉「未验证的应用」警告页即可。
+      务必把 GCP 的「OAuth 同意屏幕 / Google Auth Platform」发布状态改成<b>「正式版」</b>。
+      停在「测试中」的话授权令牌只有 7 天有效期。个人使用不需要提交审核。
     </div>
   </div>
 
   <div class="card">
-    <h2>服务账号密钥</h2>
+    <h2>② 浏览器登录 <span class="pill p-waiting">申请收录用</span></h2>
     <p class="sub">
-      适合代管他人站点、或做无人值守的服务端定时任务。缺点是每个 GSC 属性都要手动把它的邮箱加为所有者。
-      两种凭据可以混用，配额分别计算。
+      点下面的按钮会打开<b>你本机真实的 Chrome</b>，请在里面用自己的 Google 账号登录。
+      工具不经手你的密码，也不会替你点登录相关的任何按钮。
+    </p>
+    <div class="row">
+      <button class="btn primary" id="btnWebLogin">开始浏览器登录</button>
+      <button class="btn danger" id="btnWebLogout">清除浏览器登录</button>
+      <span class="hint" id="webLoginHint"></span>
+    </div>
+    <div class="loginbox" id="webLoginBox"></div>
+    <div class="banner warn" style="margin:12px 0 0">
+      <b>这条路跟官方 API 性质不同</b>：它是自动操作 GSC 网页，属于灰色地带，
+      依赖 Google 页面结构、对方改版就会失效；遇到验证码会<b>立即整体停止</b>，绝不尝试绕过。
+      登录数据存在 <code>accounts/browser_profile/</code>，拿到它基本等于拿到你已登录的账号，别打包外传。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>凭据列表</h2>
+    <p class="sub">「可见的 GSC 属性」一列会列出每个凭据实际能访问的属性，排查权限问题只看这一列就够了。</p>
+    <div class="row" style="margin-bottom:12px">
+      <button class="btn primary" id="btnVerify">验证全部凭据权限</button>
+      <span class="hint" id="verifyHint"></span>
+    </div>
+    <div class="tbox"><div class="tscroll"><table>
+      <thead><tr>
+        <th style="width:120px">凭据</th><th style="width:230px">邮箱</th>
+        <th style="width:250px">状态</th><th>可见的 GSC 属性</th>
+        <th style="width:90px">今日查询</th><th style="width:56px"></th>
+      </tr></thead>
+      <tbody id="accBody"><tr><td colspan="6"><div class="empty">还没有凭据</div></td></tr></tbody>
+    </table></div></div>
+  </div>
+
+  <div class="card">
+    <h2>服务账号密钥（可选）</h2>
+    <p class="sub">
+      适合代管他人站点。缺点是每个 GSC 属性都要手动把它的邮箱加为所有者。
+      <b>只能用于查询</b>，申请收录仍然要靠上面的浏览器登录。
     </p>
     <div class="drop" id="dropKeys">
       <b>把服务账号 JSON 密钥拖到这里</b>
       或点击选择，可一次多选
     </div>
     <input type="file" id="fileKeys" accept=".json,application/json" multiple class="hide">
-    <div class="row" style="margin-top:14px">
-      <button class="btn primary" id="btnVerify">验证全部凭据权限</button>
-      <span class="hint" id="verifyHint"></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>账号列表</h2>
-    <p class="sub">「状态」一列会直接告诉你哪一步没配好。</p>
-    <div class="tbox"><div class="tscroll"><table>
-      <thead><tr>
-        <th style="width:120px">密钥文件</th><th style="width:230px">服务账号邮箱</th>
-        <th style="width:250px">状态</th><th>可见的 GSC 属性</th>
-        <th style="width:110px">今日配额</th><th style="width:56px"></th>
-      </tr></thead>
-      <tbody id="accBody"><tr><td colspan="6"><div class="empty">还没有账号，先上传密钥</div></td></tr></tbody>
-    </table></div></div>
   </div>
 
   <div class="card">
     <h2>配置步骤备忘</h2>
-    <p class="sub">两条路都从同一件事开始：建 GCP 项目并启用两个 API。</p>
     <ol class="steps">
       <li>在 <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer">Google Cloud 控制台</a> 新建项目</li>
-      <li>启用 <b>Indexing API</b> 和 <b>Google Search Console API</b>（两个都要）</li>
-    </ol>
-
-    <h2 style="margin-top:18px">路线 A：OAuth 登录（站点多、都在你自己账号下）</h2>
-    <ol class="steps" start="3">
-      <li>「API 和服务 → OAuth 同意屏幕」配置好，发布状态改成 <b>正式版</b></li>
+      <li>启用 <b>Google Search Console API</b>（Indexing API 已不需要）</li>
+      <li>「OAuth 同意屏幕」配好，发布状态改成 <b>正式版</b></li>
       <li>「凭据 → 创建凭据 → OAuth 客户端 ID」，类型选 <b>桌面应用</b>，下载 JSON</li>
-      <li>把 JSON 拖到本页最上面的框，点「开始授权」，用你自己的 Google 账号同意</li>
-      <li>完事。GSC 那边<b>什么都不用改</b></li>
-      <li>要更多配额：另开一个 GCP 项目重复 2~6 步，同一个邮箱再授权一次</li>
+      <li>把 JSON 拖到本页第①节，点「开始授权」</li>
+      <li>再到第②节点「开始浏览器登录」，用同一个 Google 账号登录一次</li>
     </ol>
-
-    <h2 style="margin-top:18px">路线 B：服务账号（代管他人站点 / 无人值守）</h2>
-    <ol class="steps" start="3">
-      <li>「IAM 和管理 → 服务账号」新建服务账号，生成 <b>JSON 密钥</b>并下载</li>
-      <li>在 <a href="https://search.google.com/search-console" target="_blank" rel="noreferrer">Search Console</a> 里，
-          <b>逐个属性</b>把服务账号邮箱添加为<b>所有者</b>（「完全」权限不够）</li>
-      <li>把下载的 JSON 拖到「服务账号密钥」的框里</li>
-      <li>要更多配额：另开 GCP 项目重复 3~5 步</li>
-    </ol>
-  </div>
-</section>
-
-<!-- ============ 收录查询 ============ -->
-<section id="p-inspect" class="hide">
-  <div class="card">
-    <h2>收录状态查询</h2>
-    <p class="sub">只查不提交。每个账号每天 2000 次查询额度，和提交额度互不影响。</p>
-    <textarea id="inspText" placeholder="每行一个 URL"></textarea>
-    <div class="row" style="margin-top:12px">
-      <button class="btn primary" id="btnInspect">开始查询</button>
-      <button class="btn" id="expInsp">导出 CSV</button>
-      <span class="hint" id="inspHint"></span>
-    </div>
-  </div>
-
-  <div class="card hide" id="inspJobCard">
-    <h2>查询进度</h2>
-    <div class="pbar"><div class="pfill" id="inspFill"></div></div>
-    <div class="ptext"><span id="inspPhase"></span><span class="num" id="inspCount"></span></div>
-    <div class="console" id="inspLog"></div>
-  </div>
-
-  <div class="card hide" id="inspResCard">
-    <h2>查询结果</h2>
-    <p class="sub" id="inspSub"></p>
-    <div class="tbox"><div class="tscroll"><table>
-      <thead><tr>
-        <th>URL</th><th style="width:100px">判定</th>
-        <th style="width:180px">收录情况</th><th style="width:150px">上次抓取</th>
-      </tr></thead>
-      <tbody id="inspBody"></tbody>
-    </table></div></div>
   </div>
 </section>
 
@@ -452,35 +435,38 @@ ol.steps b{color:var(--text)}
 <section id="p-stats" class="hide">
   <div class="card">
     <h2>总览</h2>
-    <p class="sub">统计来自本地数据库，记录本工具的全部操作历史。</p>
     <div class="stats" id="statCards"></div>
   </div>
 
   <div class="card">
-    <h2>最近 14 天提交量</h2>
+    <h2>两种提交方式的实际效果对比</h2>
+    <p class="sub">
+      <code>webauto</code> 是现在用的网页自动化；<code>indexing_api</code> 是已移除的旧通道
+      （Google 官方只声明支持 JobPosting / BroadcastEvent，对普通网页不保证效果）。
+    </p>
+    <div class="tbox"><table>
+      <thead><tr><th style="width:180px">来源</th><th style="width:110px">总次数</th><th style="width:110px">成功次数</th><th>说明</th></tr></thead>
+      <tbody id="srcBody"><tr><td colspan="4"><div class="empty">还没有记录</div></td></tr></tbody>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h2>最近 14 天</h2>
     <p class="sub">绿色为成功，红色为失败。</p>
     <div id="chart"></div>
   </div>
 
   <div class="card">
-    <h2>失败原因分布</h2>
-    <div class="tbox"><table>
-      <thead><tr><th style="width:90px">状态码</th><th style="width:80px">次数</th><th>示例信息</th></tr></thead>
-      <tbody id="failBody"></tbody>
-    </table></div>
-  </div>
-
-  <div class="card">
     <h2>操作日志</h2>
     <div class="row" style="margin-bottom:11px">
-      <input type="text" id="logQ" placeholder="搜索 URL、账号或错误信息" style="flex:1;min-width:220px">
+      <input type="text" id="logQ" placeholder="搜索 URL 或信息" style="flex:1;min-width:220px">
       <button class="btn" id="btnLogSearch">搜索</button>
       <button class="btn" id="btnLogRefresh">刷新</button>
     </div>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
-        <th style="width:145px">时间</th><th style="width:110px">账号</th>
-        <th>URL</th><th style="width:70px">动作</th><th style="width:60px">状态</th><th style="width:220px">信息</th>
+        <th style="width:145px">时间</th><th style="width:110px">来源</th>
+        <th>URL</th><th style="width:60px">状态</th><th style="width:220px">信息</th>
       </tr></thead>
       <tbody id="logBody"></tbody>
     </table></div></div>
@@ -491,38 +477,45 @@ ol.steps b{color:var(--text)}
 <!-- ============ 设置 ============ -->
 <section id="p-settings" class="hide">
   <div class="card">
-    <h2>运行参数</h2>
-    <p class="sub">改完点保存，立即生效。</p>
+    <h2>查询相关（官方 API，配额充裕）</h2>
     <div class="form">
-      <div class="lbl"><b>默认站点</b>提交与预检针对的 GSC 属性</div>
+      <div class="lbl"><b>默认站点</b>启动时选中的 GSC 属性</div>
       <input type="text" id="cf_site_url" placeholder="sc-domain:example.com">
 
-      <div class="lbl"><b>每账号每日提交配额</b>Google 默认 200，除非你申请过提额否则别改</div>
-      <input type="number" id="cf_daily_quota_per_account" min="1" max="10000">
-
-      <div class="lbl"><b>每账号每日预检配额</b>Google 默认 2000</div>
+      <div class="lbl"><b>每凭据每日查询配额</b>Google 默认 2000，除非申请过提额否则别改</div>
       <input type="number" id="cf_inspect_daily_quota" min="1" max="100000">
 
-      <div class="lbl"><b>并发数</b>同时发起的请求数，建议 3~8</div>
+      <div class="lbl"><b>并发数</b>同时发起的查询请求数，建议 3~8</div>
       <input type="number" id="cf_concurrency" min="1" max="32">
 
-      <div class="lbl"><b>批量分片大小</b>单次 batch 请求携带的 URL 数，上限 100</div>
-      <input type="number" id="cf_batch_size" min="1" max="100">
-
-      <div class="lbl"><b>重复提交保护（天）</b>这么多天内提交过的 URL 默认不再提交，填 0 关闭</div>
-      <input type="number" id="cf_resubmit_after_days" min="0" max="365">
+      <div class="lbl"><b>单次扫描上限</b>一次最多处理多少条 URL，0 表示不限</div>
+      <input type="number" id="cf_scan_limit" min="0" max="100000">
 
       <div class="lbl"><b>请求超时（秒）</b></div>
       <input type="number" id="cf_request_timeout" min="5" max="300">
 
-      <div class="lbl"><b>失败重试次数</b>遇到 429 / 5xx 时的指数退避重试上限</div>
+      <div class="lbl"><b>失败重试次数</b>遇到 429 / 5xx 时的指数退避上限</div>
       <input type="number" id="cf_max_retries" min="0" max="10">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>申请收录相关（网页自动化，名额稀缺）</h2>
+    <div class="form">
+      <div class="lbl"><b>每站每日申请上限</b>本地保守闸门，Google 真实上限不明</div>
+      <input type="number" id="cf_webauto_daily_limit" min="1" max="50">
+
+      <div class="lbl"><b>点击间隔（秒）</b>两次申请之间随机等待，别设太短</div>
+      <div class="row" style="gap:6px">
+        <input type="number" id="cf_webauto_min_delay" min="1" max="120" style="width:80px"> ~
+        <input type="number" id="cf_webauto_max_delay" min="1" max="120" style="width:80px">
+      </div>
+
+      <div class="lbl"><b>无窗口模式</b>更快，但更容易被识别为自动化</div>
+      <label class="chk"><input type="checkbox" id="cf_webauto_headless">不推荐开启</label>
 
       <div class="lbl"><b>服务端口</b>改完需要重启程序</div>
       <input type="number" id="cf_port" min="1024" max="65535">
-
-      <div class="lbl"><b>默认开启提交前预检</b></div>
-      <label class="chk"><input type="checkbox" id="cf_inspect_before_submit">新建任务时默认勾选预检</label>
     </div>
     <div class="row" style="margin-top:18px">
       <button class="btn primary" id="btnSaveCfg">保存设置</button>
@@ -531,12 +524,15 @@ ol.steps b{color:var(--text)}
   </div>
 
   <div class="card">
-    <h2>关于配额与效果</h2>
-    <p class="sub" style="margin:0;line-height:1.8">
-      Indexing API 官方文档只声明支持 <code>JobPosting</code> 与 <code>BroadcastEvent</code> 两类结构化数据。
-      普通页面调用会返回成功，但 Google 是否真的据此抓取并不保证——本工具把它当作加速手段，
-      而不是保证收录的开关。真正稳的路子仍然是站点地图 + 站内链接 + 内容质量。<br><br>
-      每日配额按太平洋时间零点重置，本工具的记账口径与之对齐。
+    <h2>关于这个工具能做什么</h2>
+    <p class="sub" style="margin:0;line-height:1.85">
+      <b>能便宜地做的</b>：用官方 URL Inspection 接口批量查收录状态，每个凭据每天 2000 次，
+      几千个 URL 随便扫。这是这个工具最扎实的价值——帮你从一堆页面里精准找出哪些还没被收录。<br><br>
+      <b>稀缺的</b>：真正让 Google 优先抓取，只能靠自动点 GSC 网页上的「请求编入索引」，
+      Google 没开放这个接口，而且每天名额很少（真实上限未公开）。<br><br>
+      <b>做不到的</b>：没有任何官方 API 能"一键批量提交收录"。之前用的 Indexing API 已从本工具移除
+      ——官方只声明它支持 JobPosting / BroadcastEvent，普通网页调用虽然返回成功但对收录没有可靠作用。<br><br>
+      所以正确的用法是：<b>扫全站找出未收录的 → 存进待办池 → 每天挑最重要的一两条去申请</b>。
     </p>
   </div>
 </section>
@@ -550,7 +546,10 @@ const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-const S = { cfg:{}, quota:null, sites:[], urls:[], rows:[], filter:'all', inspRows:[], logOffset:0, acctFilter:'' };
+const S = {
+  cfg:{}, quota:null, webauto:null, sites:[], acctFilter:'',
+  pend:[], allPend:[], oauth:null, currentJob:null,
+};
 
 async function api(path, opts){
   const r = await fetch(path, opts);
@@ -566,10 +565,10 @@ function toast(msg, kind){
   if(kind) d.className = kind;
   d.textContent = msg;
   $('#toast').appendChild(d);
-  setTimeout(() => { d.style.opacity = '0'; d.style.transition = '.3s'; setTimeout(() => d.remove(), 300); }, 4200);
+  setTimeout(() => { d.style.opacity='0'; d.style.transition='.3s'; setTimeout(()=>d.remove(),300); }, 4400);
 }
 const nowT = () => new Date().toTimeString().slice(0,8);
-/* 后端一律存 UTC，展示时转成本机时区，否则用户会看到差 8 小时的时间 */
+/* 后端一律存 UTC，展示时转成本机时区，否则会看到差 8 小时的时间 */
 function localTime(iso){
   if(!iso) return '';
   const d = new Date(iso);
@@ -585,48 +584,73 @@ $$('.tab').forEach(t => t.onclick = () => {
   $$('section').forEach(s => s.classList.toggle('hide', s.id !== 'p-' + t.dataset.p));
   if(t.dataset.p === 'stats') loadStats();
   if(t.dataset.p === 'accounts'){ loadAccounts(); loadOauthStatus(); }
+  if(t.dataset.p === 'pending') loadAllPending();
 });
 
 /* ---------------- 顶栏状态 ---------------- */
-function paintQuota(q){
-  S.quota = q;
-  renderQuotaBars();
-  loadAccountPicker();
-}
-
-/* 顶部配额条：默认显示全部账号汇总；选中某个具体账号后只显示那一个账号自己的配额，
-   避免用户以为"这个账号还有 200 条"结果其实看到的是全体汇总。 */
-function renderQuotaBars(){
-  const q = S.quota;
-  if(!q) return;
+function renderQuota(){
+  const q = S.quota, w = S.webauto;
   const set = (u, l, uid, lid, fid) => {
     $(uid).textContent = u; $(lid).textContent = l;
     const pct = l > 0 ? Math.min(100, u / l * 100) : 0;
     const f = $(fid); f.style.width = pct + '%';
     f.className = 'qfill' + (pct >= 100 ? ' full' : pct >= 80 ? ' hot' : '');
   };
-  const focus = S.acctFilter && q.accounts.find(a => a.name === S.acctFilter);
-  if(focus){
-    set(focus.submit_used, focus.submit_limit, '#qsU', '#qsL', '#qsF');
-    set(focus.inspect_used, focus.inspect_limit, '#qiU', '#qiL', '#qiF');
-    $('#qsTag').textContent = '该账号';
-    $('#qsTag').title = '当前只看「' + focus.name + '」这一个账号的配额，不是全部账号的汇总。切回"自动"可看汇总。';
-  } else {
-    set(q.submit_used, q.submit_limit, '#qsU', '#qsL', '#qsF');
-    set(q.inspect_used, q.inspect_limit, '#qiU', '#qiL', '#qiF');
-    $('#qsTag').textContent = '共享';
-    $('#qsTag').title = '配额按 GCP 项目计算，不按站点计算。你名下所有站点共用这个额度。要提量请新建 GCP 项目并添加对应的服务账号密钥。';
+  if(q){
+    const focus = S.acctFilter && q.accounts.find(a => a.name === S.acctFilter);
+    if(focus){
+      set(focus.inspect_used, focus.inspect_limit, '#qiU', '#qiL', '#qiF');
+      $('#qiTag').textContent = '该账号';
+    } else {
+      set(q.inspect_used, q.inspect_limit, '#qiU', '#qiL', '#qiF');
+      $('#qiTag').textContent = '充裕';
+    }
+    $('#qiA').innerHTML = q.accounts.length
+      ? q.accounts.map(a => {
+          const left = a.inspect_limit - a.inspect_used;
+          return `<span style="margin-right:10px">${esc(a.name)} <b style="color:${left ? 'var(--ok)' : 'var(--err)'}">剩 ${left}</b></span>`;
+        }).join('')
+      : '<span>尚未配置查询凭据</span>';
+    $('#noAcc').classList.toggle('hide', q.accounts.length > 0);
   }
-  $('#qsA').innerHTML = q.accounts.length
-    ? q.accounts.map(a => {
-        const left = a.submit_limit - a.submit_used;
-        return `<span>${esc(a.name)} <b style="color:${left ? 'var(--ok)' : 'var(--err)'}">${left ? '剩 ' + left : '已用尽'}</b></span>`;
-      }).join('')
-    : '<span>尚未配置服务账号</span>';
-  $('#noAcc').classList.toggle('hide', q.accounts.length > 0);
+  if(w){
+    set(w.used, w.limit, '#qwU', '#qwL', '#qwF');
+    $('#qwA').innerHTML = w.site_url
+      ? `${esc(w.site_url)} · 本地还剩 <b style="color:${w.left ? 'var(--ok)' : 'var(--err)'}">${w.left}</b> 次`
+      : '未选择站点';
+    $('#noWebLogin').classList.toggle('hide', !!w.logged_in);
+    $('#webLoginBox').innerHTML = w.logged_in
+      ? '<span>状态：<b style="color:var(--ok)">已登录</b>，可以申请收录</span>'
+      : '<span>状态：<b style="color:var(--err)">未登录</b>，无法申请收录</span>';
+  }
 }
 
-/* 账号选择器：数据直接复用配额概览里已经带着的 name/email/kind_cn，不用再单独打一次慢请求 */
+async function loadState(){
+  try{
+    const st = await api('/api/state');
+    S.cfg = st.config;
+    S.quota = st.quota;
+    for(const k in st.config){
+      const el = $('#cf_' + k);
+      if(!el) continue;
+      if(el.type === 'checkbox') el.checked = !!st.config[k]; else el.value = st.config[k];
+    }
+    if(st.config.site_url) ensureSiteOption(st.config.site_url);
+    loadAccountPicker();
+    await loadWebautoStatus();
+    renderQuota();
+    if(st.account_errors.length)
+      st.account_errors.forEach(e => toast(e.file + '：' + e.error, 'err'));
+  }catch(e){ toast('读取状态失败：' + e.message, 'err'); }
+}
+
+async function loadWebautoStatus(){
+  try{
+    S.webauto = await api('/api/webauto/status?site_url=' + encodeURIComponent(site()));
+    renderQuota();
+  }catch(e){}
+}
+
 function loadAccountPicker(){
   if(!S.quota) return;
   const sel = $('#acct'), cur = sel.value;
@@ -638,26 +662,9 @@ function loadAccountPicker(){
 }
 $('#acct').onchange = () => {
   S.acctFilter = $('#acct').value;
-  renderQuotaBars();
+  renderQuota();
   loadSites();
 };
-
-async function loadState(){
-  try{
-    const st = await api('/api/state');
-    S.cfg = st.config;
-    paintQuota(st.quota);
-    for(const k in st.config){
-      const el = $('#cf_' + k);
-      if(!el) continue;
-      if(el.type === 'checkbox') el.checked = !!st.config[k]; else el.value = st.config[k];
-    }
-    $('#optInspect').checked = !!st.config.inspect_before_submit;
-    if(st.config.site_url) ensureSiteOption(st.config.site_url);
-    if(st.account_errors.length)
-      st.account_errors.forEach(e => toast(e.file + '：' + e.error, 'err'));
-  }catch(e){ toast('读取状态失败：' + e.message, 'err'); }
-}
 
 function ensureSiteOption(url){
   const sel = $('#site');
@@ -670,9 +677,8 @@ function ensureSiteOption(url){
   autofillSitemapUrl();
 }
 
-/* 站点地图地址自动填充：根据当前选中的站点猜一个 sitemap.xml 地址。
-   只有输入框为空、或内容还等于上一次自动填的值时才覆盖——
-   用户手动改过的地址（比如 sitemap 不在根目录）不会被冲掉。 */
+/* 站点地图地址自动填充：只有输入框为空、或内容还等于上次自动填的值时才覆盖，
+   用户手动改过的地址（比如 sitemap 不在根目录）不会被冲掉 */
 let sitemapAutoValue = '';
 function guessSitemapUrl(siteUrl){
   if(!siteUrl) return '';
@@ -698,40 +704,40 @@ async function loadSites(){
     const { sites } = await api('/api/sites' + qs);
     S.sites = sites;
     const sel = $('#site');
-    // 优先保留当前选择（如果切换账号后它仍然可见）；不然退到新列表的第一个站点。
-    // 没配置过站点时，下拉框会按浏览器默认行为静默选中第一项——
-    // 这里显式接管那次选择，让 checkSiteAccess / 自动填充站点地图等逻辑能感知到，
-    // 不然会出现"界面显示了站点，但我们的状态还以为没选"的不一致
+    // 优先保留当前选择（切换账号后它仍可见的话）；否则退到新列表第一个。
+    // 显式接管这次选择，否则浏览器会静默选中第一项而我们的状态还以为没选。
     const prev = sel.value || S.cfg.site_url || '';
     const cur = sites.some(s => s.site_url === prev) ? prev : ((sites[0] && sites[0].site_url) || '');
     sel.innerHTML = sites.length ? '' : '<option value="">（账号无可见属性）</option>';
     sites.forEach(s => {
       const o = document.createElement('option');
       o.value = s.site_url;
-      o.textContent = s.site_url + (s.permission === 'siteOwner' ? '　✓所有者' : '　⚠' + s.permission);
+      o.textContent = s.site_url + (s.permission === 'siteOwner' ? '　✓所有者' : '　⚠' + (s.permission_cn || s.permission));
       sel.appendChild(o);
     });
     if(cur) ensureSiteOption(cur);
     checkSiteAccess();
+    await loadWebautoStatus();
+    loadPending();
     if(sites.length) toast('找到 ' + sites.length + ' 个 GSC 属性', 'ok');
   }catch(e){ toast('读取站点失败：' + e.message, 'err'); }
   finally{ $('#reloadSites').disabled = false; }
 }
-/* 选中的属性如果不在账号可访问列表里，提交和预检必然 403，提前说清楚 */
+
+/* 选中的属性如果不在凭据可访问列表里，查询和申请都会 403，提前说清楚 */
 function checkSiteAccess(){
   const el = $('#siteWarn'), cur = $('#site').value;
   if(!cur || !S.sites || !S.sites.length){ el.classList.add('hide'); return; }
   const hit = S.sites.find(x => x.site_url === cur);
   if(!hit){
-    el.innerHTML = `当前选中的属性 <code>${esc(cur)}</code> 不在服务账号可访问的列表里，`
-      + `提交和预检都会返回「权限不足」。账号实际能访问的是：`
-      + S.sites.map(x => '<code>' + esc(x.site_url) + '</code>').join('、')
+    el.innerHTML = `当前选中的属性 <code>${esc(cur)}</code> 不在凭据可访问的列表里，查询会返回「权限不足」。`
+      + `凭据实际能访问的是：` + S.sites.map(x => '<code>' + esc(x.site_url) + '</code>').join('、')
       + `。<br>注意「域名属性」<code>sc-domain:example.com</code> 和「网址前缀属性」`
       + `<code>https://example.com/</code> 在 GSC 里是两个独立属性，需要分别授权。`;
     el.className = 'banner err';
   } else if(hit.permission !== 'siteOwner'){
     el.innerHTML = `当前属性 <code>${esc(cur)}</code> 的权限级别是「${esc(hit.permission_cn || hit.permission)}」，`
-      + `不是「所有者」。提交索引会被拒绝。请到 GSC 的「设置 → 用户和权限」把级别改成所有者。`;
+      + `不是「所有者」。查收录可能可以，但申请收录会被拒绝。`;
     el.className = 'banner warn';
   } else {
     el.classList.add('hide');
@@ -745,17 +751,23 @@ $('#site').onchange = async () => {
   autofillSitemapUrl();
   try{ await api('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({site_url: S.cfg.site_url})}); }catch(e){}
+  await loadWebautoStatus();
+  loadPending();
 };
 const site = () => $('#site').value || S.cfg.site_url || '';
 
 /* ---------------- 任务与 SSE ---------------- */
-function watchJob(jobId, ui, onDone){
-  const log = $(ui.log), fill = $(ui.fill), phase = $(ui.phase), count = $(ui.count);
-  $(ui.card).classList.remove('hide');
+const PHASE_CN = { inspect:'查询收录状态', webauto:'申请收录', '':'处理中' };
+function watchJob(jobId, title, onDone, opts){
+  opts = opts || {};
+  S.currentJob = jobId;
+  const log = $('#jobLog'), fill = $('#jobFill');
+  $('#jobCard').classList.remove('hide');
+  $('#jobTitle').textContent = title;
+  $('#btnStopJob').classList.toggle('hide', !opts.stoppable);
   log.innerHTML = ''; fill.style.width = '0%';
-  phase.textContent = '准备中…'; count.textContent = '';
+  $('#jobPhase').textContent = '准备中…'; $('#jobCount').textContent = '';
 
-  const PH = { inspect:'预检收录状态', submit:'提交索引', '':'处理中' };
   const es = new EventSource('/api/job/' + jobId + '/events');
   es.onmessage = ev => {
     let e; try{ e = JSON.parse(ev.data); }catch(err){ return; }
@@ -767,13 +779,14 @@ function watchJob(jobId, ui, onDone){
     } else if(e.type === 'progress'){
       const pct = e.total ? (e.done / e.total * 100) : 0;
       fill.style.width = pct + '%';
-      phase.textContent = PH[e.phase] ?? e.phase;
-      count.textContent = e.total ? e.done + ' / ' + e.total : '';
+      $('#jobPhase').textContent = PHASE_CN[e.phase] ?? e.phase;
+      $('#jobCount').textContent = e.total ? e.done + ' / ' + e.total : '';
     } else if(e.type === 'done'){
       es.close();
+      $('#btnStopJob').classList.add('hide');
       api('/api/job/' + jobId).then(j => {
-        if(j.status === 'error'){ toast('任务失败：' + j.error, 'err'); }
-        else { fill.style.width = '100%'; phase.textContent = '完成'; }
+        if(j.status === 'error') toast('任务失败：' + j.error, 'err');
+        else { fill.style.width = '100%'; $('#jobPhase').textContent = '完成'; }
         onDone && onDone(j);
         loadState();
       }).catch(err => toast(err.message, 'err'));
@@ -781,185 +794,151 @@ function watchJob(jobId, ui, onDone){
   };
   es.onerror = () => es.close();
 }
+$('#btnStopJob').onclick = async () => {
+  if(!S.currentJob) return;
+  try{ await api('/api/job/' + S.currentJob + '/stop', {method:'POST'}); toast('已请求停止', 'ok'); }
+  catch(e){ toast(e.message, 'err'); }
+};
 
-/* ---------------- URL 来源 ---------------- */
-$$('.seg').forEach(b => b.onclick = () => {
-  $$('.seg').forEach(x => x.classList.toggle('on', x === b));
-  ['paste','file','sitemap'].forEach(k => $('#src-' + k).classList.toggle('hide', k !== b.dataset.src));
-});
-
-function setLoaded(n, from){
-  $('#loaded').textContent = n ? '已载入 ' + n + ' 条 URL' + (from ? '（来自' + from + '）' : '') : '';
-}
-/* 与后端 sources.parse_text 保持同样口径：先按行剥注释，再按空白/逗号切分 */
-function parseUrlText(text){
-  const out = [];
-  (text || '').split(/\r?\n/).forEach(line => {
-    line = line.trim();
-    if(!line || line.startsWith('#')) return;
-    for(const tok of line.split(/[,\s]+/)){
-      if(!tok) continue;
-      if(tok.startsWith('#')) break;
-      out.push(tok);
-    }
-  });
-  return out;
-}
-function readFiles(files){
-  let acc = 0;
-  const texts = [];
-  Array.from(files).forEach(f => {
-    const r = new FileReader();
-    r.onload = () => {
-      texts.push(r.result);
-      if(++acc === files.length){
-        S.urls = [];
-        const joined = texts.join('\n');
-        $('#urlText').value = joined;
-        const n = parseUrlText(joined).length;
-        setLoaded(n, '文件');
-        toast('已读取 ' + files.length + ' 个文件，约 ' + n + ' 条', 'ok');
-      }
-    };
-    r.readAsText(f);
-  });
-}
-function wireDrop(dropId, inputId, handler){
-  const d = $(dropId), i = $(inputId);
-  d.onclick = () => i.click();
-  i.onchange = () => { if(i.files.length) handler(i.files); i.value = ''; };
-  ['dragenter','dragover'].forEach(ev => d.addEventListener(ev, e => {
-    e.preventDefault(); d.classList.add('over');
-  }));
-  ['dragleave','drop'].forEach(ev => d.addEventListener(ev, e => {
-    e.preventDefault(); d.classList.remove('over');
-  }));
-  d.addEventListener('drop', e => { if(e.dataTransfer.files.length) handler(e.dataTransfer.files); });
-}
-wireDrop('#dropUrls', '#fileUrls', readFiles);
-$('#urlText').oninput = () => { S.urls = []; setLoaded(0); };
-
-$('#btnFetchSitemap').onclick = async () => {
-  const url = $('#sitemapUrl').value.trim();
-  if(!url) return toast('请先填写站点地图地址', 'err');
+/* ---------------- 扫描 ---------------- */
+$('#btnScan').onclick = async () => {
+  if(!site()) return toast('请先在顶部选择站点', 'err');
+  const sm = $('#sitemapUrl').value.trim();
+  if(!sm) return toast('请填写站点地图地址', 'err');
   try{
-    const { job_id } = await api('/api/sitemap/fetch', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({url})});
-    $('#jobTitle').textContent = '抓取站点地图';
-    watchJob(job_id, {card:'#jobCard', log:'#jobLog', fill:'#jobFill', phase:'#jobPhase', count:'#jobCount'}, j => {
-      if(j.result && j.result.urls){
-        S.urls = j.result.urls;
-        setLoaded(S.urls.length, '站点地图');
-        toast('抓到 ' + S.urls.length + ' 条 URL，可以开始分析了', 'ok');
-      }
+    const { job_id } = await api('/api/scan', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({site_url: site(), sitemap_url: sm, account: S.acctFilter})});
+    watchJob(job_id, '扫描中', j => {
+      const r = j.result || {};
+      if(r.error) return;
+      toast(`扫描完成：未收录 ${r.pending || 0} 条已进待办池`, 'ok');
+      loadPending();
     });
   }catch(e){ toast(e.message, 'err'); }
 };
 
 $('#btnSubmitSitemap').onclick = async () => {
-  const url = $('#sitemapUrl').value.trim();
-  if(!url) return toast('请先填写站点地图地址', 'err');
   if(!site()) return toast('请先在顶部选择站点', 'err');
+  const sm = $('#sitemapUrl').value.trim();
+  if(!sm) return toast('请填写站点地图地址', 'err');
   try{
     const r = await api('/api/sitemap/submit', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, site_url: site()})});
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url: sm, site_url: site()})});
     toast(r.message, r.ok ? 'ok' : 'err');
   }catch(e){ toast(e.message, 'err'); }
 };
 
-/* ---------------- 分析 ---------------- */
-function payload(){
-  const b = { site_url: site(), inspect: $('#optInspect').checked, force: $('#optForce').checked, account: S.acctFilter };
-  if(S.urls.length) b.urls = S.urls; else b.text = $('#urlText').value;
-  return b;
-}
-$('#btnAnalyze').onclick = async () => {
-  if(!site()) return toast('请先在顶部选择站点', 'err');
-  const b = payload();
-  if(!b.urls && !(b.text || '').trim()) return toast('还没有任何 URL', 'err');
-  $('#resCard').classList.add('hide');
+/* ---------------- 待办池（当前站点，用于挑选提交） ---------------- */
+const PEND_CHIPS = [['all','全部'],['never','从未申请'],['waiting','已申请待观察']];
+let pendFilter = 'all';
+
+async function loadPending(){
+  if(!site()) return;
   try{
-    const { job_id } = await api('/api/analyze', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify(b)});
-    $('#jobTitle').textContent = '分析中';
-    watchJob(job_id, {card:'#jobCard', log:'#jobLog', fill:'#jobFill', phase:'#jobPhase', count:'#jobCount'}, j => {
-      if(j.result) renderAnalysis(j.result);
-    });
-  }catch(e){ toast(e.message, 'err'); }
-};
+    const r = await api('/api/pending?site_url=' + encodeURIComponent(site()));
+    S.pend = r.rows.map(x => ({...x, selected:false}));
+    S.webauto = r.webauto;
+    renderQuota();
+    renderPendChips();
+    renderPend();
+  }catch(e){ toast('读取待办失败：' + e.message, 'err'); }
+}
 
-$('#btnDirect').onclick = async () => {
-  if(!site()) return toast('请先在顶部选择站点', 'err');
-  const b = payload();
-  const urls = b.urls || parseUrlText(b.text);
-  if(!urls.length) return toast('还没有任何 URL', 'err');
-  if(!confirm('将跳过去重检查和收录预检，直接提交 ' + urls.length + ' 条 URL。\n这会消耗对应的提交配额，确定吗？')) return;
-  doSubmit(urls);
-};
+function pendState(r){ return r.requested_at ? 'waiting' : 'never'; }
 
-const CHIPS = [
-  ['all','全部'], ['pending','待提交'], ['indexed','已收录'],
-  ['recent','近期已提交'], ['offsite','不属于本站点'], ['unknown','未预检']
-];
-
-function renderAnalysis(res){
-  S.rows = res.rows;
-  S.filter = 'all';
-  const s = res.summary;
-  $('#resCard').classList.remove('hide');
-  $('#resSub').textContent =
-    `输入 ${s.raw} 条 → 去重后 ${s.deduped} 条 → 建议提交 ${s.pending + s.unknown} 条`;
-  const counts = { all: S.rows.length, pending: s.pending, indexed: s.indexed,
-                   recent: s.recent, offsite: s.offsite, unknown: s.unknown };
-  $('#resChips').innerHTML = CHIPS
-    .filter(([k]) => k === 'all' || counts[k] > 0)
-    .map(([k, label]) => `<button class="chip${k === 'all' ? ' on' : ''}" data-f="${k}">${label} <b>${counts[k]}</b></button>`)
+function renderPendChips(){
+  const counts = {
+    all: S.pend.length,
+    never: S.pend.filter(r => pendState(r) === 'never').length,
+    waiting: S.pend.filter(r => pendState(r) === 'waiting').length,
+  };
+  $('#pendChips').innerHTML = PEND_CHIPS
+    .map(([k,label]) => `<button class="chip${k===pendFilter?' on':''}" data-f="${k}">${label} <b>${counts[k]}</b></button>`)
     .join('');
-  $$('#resChips .chip').forEach(c => c.onclick = () => {
-    S.filter = c.dataset.f;
-    $$('#resChips .chip').forEach(x => x.classList.toggle('on', x === c));
-    renderRows();
+  $$('#pendChips .chip').forEach(c => c.onclick = () => {
+    pendFilter = c.dataset.f;
+    renderPendChips(); renderPend();
   });
-  renderRows();
+  const w = S.webauto || {};
+  $('#scanPendSub').textContent =
+    `当前站点待办 ${S.pend.length} 条。今日本地还剩 ${w.left ?? '?'} 次申请名额`
+    + `（Google 真实上限未公开，可能提前撞上限流）。`;
 }
 
-function visibleRows(){
-  return S.filter === 'all' ? S.rows : S.rows.filter(r => r.state === S.filter);
+function visiblePend(){
+  return pendFilter === 'all' ? S.pend : S.pend.filter(r => pendState(r) === pendFilter);
 }
 
-function renderRows(){
-  const rows = visibleRows(), CAP = 500, shown = rows.slice(0, CAP);
-  $('#resBody').innerHTML = shown.length ? shown.map(r => {
-    const i = S.rows.indexOf(r);
-    const dis = r.state === 'offsite' ? ' disabled' : '';
+function renderPend(){
+  const rows = visiblePend(), CAP = 300, shown = rows.slice(0, CAP);
+  $('#pendBody').innerHTML = shown.length ? shown.map(r => {
+    const i = S.pend.indexOf(r);
+    const st = pendState(r);
     return `<tr>
-      <td class="c"><input type="checkbox" data-i="${i}"${r.selected ? ' checked' : ''}${dis}></td>
-      <td class="u">${esc(r.url)}${r.note ? '<div class="note">' + esc(r.note) + '</div>' : ''}</td>
-      <td><span class="pill p-${r.state}">${esc(r.state_cn)}</span></td>
+      <td class="c"><input type="checkbox" data-i="${i}"${r.selected?' checked':''}></td>
+      <td class="u">${esc(r.url)}</td>
       <td>${esc(r.coverage || '—')}</td>
-      <td class="num">${r.last_submitted ? esc(localDate(r.last_submitted)) : '从未'}
-        ${r.submit_count ? '<div class="note">共 ' + r.submit_count + ' 次</div>' : ''}</td>
+      <td><span class="pill p-${st}">${st === 'never' ? '从未申请' : '已申请 ' + r.request_count + ' 次'}</span>
+        ${r.last_result && r.last_result !== 'success' ? '<div class="note">' + esc(r.last_result) + '</div>' : ''}</td>
+      <td class="num">${r.requested_at ? esc(localDate(r.requested_at)) : '—'}</td>
     </tr>`;
   }).join('') : '<tr><td colspan="5"><div class="empty">该筛选下没有记录</div></td></tr>';
 
-  $('#resMore').textContent = rows.length > CAP
-    ? `表格只显示前 ${CAP} 条，勾选与提交仍然覆盖全部 ${rows.length} 条。` : '';
-  $$('#resBody input[type=checkbox]').forEach(cb => cb.onchange = () => {
-    S.rows[+cb.dataset.i].selected = cb.checked;
-    updateSelCount();
+  $('#pendMore').textContent = rows.length > CAP
+    ? `表格只显示前 ${CAP} 条，勾选与提交仍覆盖全部 ${rows.length} 条。` : '';
+  $$('#pendBody input[type=checkbox]').forEach(cb => cb.onchange = () => {
+    S.pend[+cb.dataset.i].selected = cb.checked;
+    updateReqCount();
   });
-  updateSelCount();
+  updateReqCount();
 }
 
-const selected = () => S.rows.filter(r => r.selected && r.state !== 'offsite');
-function updateSelCount(){
-  const n = selected().length;
-  $('#btnSubmitSel').textContent = '提交选中 ' + n + ' 条';
-  $('#btnSubmitSel').disabled = n === 0;
+const selectedPend = () => S.pend.filter(r => r.selected);
+function updateReqCount(){
+  const n = selectedPend().length;
+  const left = (S.webauto && S.webauto.left) ?? 0;
+  const btn = $('#btnRequest');
+  btn.textContent = '申请收录（选中 ' + n + ' 条）';
+  btn.disabled = n === 0;
+  if(n > left) btn.textContent += ` ⚠ 超出今日名额 ${left}`;
 }
-$('#selAll').onclick = () => { visibleRows().forEach(r => { if(r.state !== 'offsite') r.selected = true; }); renderRows(); };
-$('#selNone').onclick = () => { visibleRows().forEach(r => r.selected = false); renderRows(); };
-$('#thAll').onchange = e => { visibleRows().forEach(r => { if(r.state !== 'offsite') r.selected = e.target.checked; }); renderRows(); };
+
+$('#selTop').onclick = () => {
+  const left = (S.webauto && S.webauto.left) ?? 0;
+  S.pend.forEach(r => r.selected = false);
+  // 优先挑从没申请过的，名额有限就交这些最值
+  const vis = visiblePend();
+  const cands = vis.filter(r => pendState(r) === 'never')
+    .concat(vis.filter(r => pendState(r) === 'waiting'));
+  cands.slice(0, left).forEach(r => r.selected = true);
+  renderPend();
+  if(!left) toast('今日本地名额已用完', 'err');
+};
+$('#selNone').onclick = () => { S.pend.forEach(r => r.selected = false); renderPend(); };
+$('#thAll').onchange = e => { visiblePend().forEach(r => r.selected = e.target.checked); renderPend(); };
+
+$('#btnRequest').onclick = async () => {
+  const urls = selectedPend().map(r => r.url);
+  if(!urls.length) return;
+  const left = (S.webauto && S.webauto.left) ?? 0;
+  let msg = '将逐个打开浏览器，去 GSC 网页申请收录 ' + urls.length + ' 条。';
+  if(urls.length > left) msg += '\n\n注意：今日本地名额只剩 ' + left + ' 次，超出的会被跳过、留到明天。';
+  msg += '\n\n遇到验证码会立即整体停止。确定继续吗？';
+  if(!confirm(msg)) return;
+  try{
+    const { job_id } = await api('/api/webauto/submit', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({site_url: site(), urls})});
+    $('#jobCard').scrollIntoView({behavior:'smooth', block:'nearest'});
+    watchJob(job_id, '申请收录中', j => {
+      const r = j.result || {};
+      toast(`结束：成功 ${r.ok||0} · 失败 ${r.failed||0} · 跳过 ${r.skipped||0}`, r.ok ? 'ok' : 'err');
+      loadPending();
+    }, {stoppable:true});
+  }catch(e){ toast(e.message, 'err'); }
+};
 
 function toCsv(rows, cols){
   const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
@@ -973,43 +952,64 @@ function download(name, text){
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 $('#expCsv').onclick = () => {
-  if(!S.rows.length) return toast('还没有可导出的结果', 'err');
-  download('gsc-分析结果.csv', toCsv(visibleRows(),
-    [['URL','url'],['状态','state_cn'],['收录情况','coverage'],['判定','verdict'],
-     ['上次提交','last_submitted'],['提交次数','submit_count'],['备注','note']]));
+  if(!S.pend.length) return toast('没有可导出的内容', 'err');
+  download('未收录清单.csv', toCsv(visiblePend(),
+    [['站点','site'],['URL','url'],['收录情况','coverage'],['判定','verdict'],
+     ['申请次数','request_count'],['上次申请','requested_at'],['上次结果','last_result']]));
 };
 
-/* ---------------- 提交 ---------------- */
-$('#btnSubmitSel').onclick = () => {
-  const urls = selected().map(r => r.url);
-  if(!urls.length) return;
-  doSubmit(urls);
-};
-async function doSubmit(urls){
+/* ---------------- 未收录清单（全站点） ---------------- */
+async function loadAllPending(){
   try{
-    const { job_id } = await api('/api/submit', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({urls, site_url: site(), delete: $('#optDelete').checked, account: S.acctFilter})});
-    $('#jobTitle').textContent = '提交中';
-    $('#jobCard').scrollIntoView({behavior:'smooth', block:'nearest'});
-    watchJob(job_id, {card:'#jobCard', log:'#jobLog', fill:'#jobFill', phase:'#jobPhase', count:'#jobCount'}, j => {
-      const r = j.result;
-      if(!r) return;
-      toast(`提交完成：成功 ${r.ok} 条，失败 ${r.failed} 条`, r.failed ? 'err' : 'ok');
-      const byUrl = {};
-      r.results.forEach(x => byUrl[x.url] = x);
-      S.rows.forEach(row => {
-        const x = byUrl[row.url];
-        if(!x) return;
-        row.selected = false;
-        if(x.ok){ row.state = 'recent'; row.state_cn = '刚刚已提交'; row.note = ''; }
-        else { row.state = 'unknown'; row.state_cn = '提交失败'; row.note = x.message; }
-      });
-      if(S.rows.length) renderRows();
+    const inc = $('#pendIncludeDone').checked ? 'true' : 'false';
+    const r = await api('/api/pending?site_url=&include_done=' + inc);
+    $('#pendSiteBody').innerHTML = r.counts.length ? r.counts.map(c => `<tr>
+      <td class="u">${esc(c.site)}</td>
+      <td class="num">${c.total}</td>
+      <td class="num">${c.never}</td>
+      <td class="num">${c.waiting}</td>
+      <td><button class="btn sm" data-go="${esc(c.site)}">去处理</button></td>
+    </tr>`).join('') : '<tr><td colspan="5"><div class="empty">还没有待办，先去扫描</div></td></tr>';
+    $$('#pendSiteBody [data-go]').forEach(b => b.onclick = () => {
+      ensureSiteOption(b.dataset.go);
+      $('#site').dispatchEvent(new Event('change'));
+      $('.tab[data-p="scan"]').click();
     });
+
+    S.allPend = r.rows;
+    const CAP = 500, shown = S.allPend.slice(0, CAP);
+    $('#allPendSub').textContent = '共 ' + S.allPend.length + ' 条';
+    $('#allPendBody').innerHTML = shown.length ? shown.map(r2 => {
+      const st = r2.done_at ? 'ok' : pendState(r2);
+      const label = r2.done_at ? '已收录' : (st === 'never' ? '从未申请' : '已申请 ' + r2.request_count + ' 次');
+      return `<tr>
+        <td class="u">${esc(r2.site)}</td>
+        <td class="u">${esc(r2.url)}</td>
+        <td>${esc(r2.coverage || '—')}</td>
+        <td><span class="pill p-${st}">${label}</span></td>
+        <td class="num">${r2.requested_at ? esc(localDate(r2.requested_at)) : '—'}</td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="5"><div class="empty">（空）</div></td></tr>';
+    $('#allPendMore').textContent = S.allPend.length > CAP ? '只显示前 ' + CAP + ' 条' : '';
   }catch(e){ toast(e.message, 'err'); }
 }
+$('#btnReloadPend').onclick = loadAllPending;
+$('#pendIncludeDone').onchange = loadAllPending;
 
-/* ---------------- 账号 ---------------- */
+/* ---------------- 凭据上传与列表 ---------------- */
+function wireDrop(dropId, inputId, handler){
+  const d = $(dropId), i = $(inputId);
+  d.onclick = () => i.click();
+  i.onchange = () => { if(i.files.length) handler(i.files); i.value = ''; };
+  ['dragenter','dragover'].forEach(ev => d.addEventListener(ev, e => {
+    e.preventDefault(); d.style.borderColor = 'var(--accent)';
+  }));
+  ['dragleave','drop'].forEach(ev => d.addEventListener(ev, e => {
+    e.preventDefault(); d.style.borderColor = '';
+  }));
+  d.addEventListener('drop', e => { if(e.dataTransfer.files.length) handler(e.dataTransfer.files); });
+}
+
 async function uploadKeys(files){
   const fd = new FormData();
   Array.from(files).forEach(f => fd.append('files', f));
@@ -1030,15 +1030,14 @@ async function loadAccounts(){
     $('#accBody').innerHTML = accounts.length ? accounts.map(a => {
       let st;
       if(!a.ok) st = `<span class="pill p-err">异常</span><div class="note">${esc(a.error)}</div>`;
-      else if(a.error) st = `<span class="pill p-recent">需处理</span><div class="note">${esc(a.error)}</div>`;
-      else st = `<span class="pill p-indexed">正常 · 所有者</span>`;
+      else if(a.error) st = `<span class="pill p-waiting">需处理</span><div class="note">${esc(a.error)}</div>`;
+      else st = `<span class="pill p-ok">正常 · 所有者</span>`;
       const cur = site();
       const props = a.sites && a.sites.length
         ? a.sites.slice(0, 10).map(x => {
-            const active = x.site_url === cur;
-            const owner = x.permission === 'siteOwner';
-            return `<div class="prop${active ? ' active' : ''}">${active ? '▸ ' : ''}${esc(x.site_url)}`
-              + ` <span class="pill p-${owner ? 'indexed' : 'recent'}">${esc(x.permission_cn || x.permission)}</span></div>`;
+            const active = x.site_url === cur, owner = x.permission === 'siteOwner';
+            return `<div class="prop${active?' active':''}">${active?'▸ ':''}${esc(x.site_url)}`
+              + ` <span class="pill p-${owner?'ok':'waiting'}">${esc(x.permission_cn || x.permission)}</span></div>`;
           }).join('') + (a.sites.length > 10 ? `<div class="note">…共 ${a.sites.length} 个</div>` : '')
         : '<span class="note">无</span>';
       return `<tr>
@@ -1046,13 +1045,13 @@ async function loadAccounts(){
         <td class="u">${esc(a.email || '—')}${a.project_id ? '<div class="note">项目 ' + esc(a.project_id) + '</div>' : ''}</td>
         <td>${st}</td>
         <td>${props}</td>
-        <td class="num">提交 ${a.submit_used}/${a.submit_limit}<div class="note">预检 ${a.inspect_used}/${a.inspect_limit}</div></td>
+        <td class="num">${a.inspect_used}/${a.inspect_limit}</td>
         <td><button class="btn sm danger" data-del="${esc(a.name)}">删除</button></td>
       </tr>`;
-    }).join('') : '<tr><td colspan="6"><div class="empty">还没有账号，先上传密钥</div></td></tr>';
+    }).join('') : '<tr><td colspan="6"><div class="empty">还没有凭据</div></td></tr>';
 
     $$('#accBody [data-del]').forEach(b => b.onclick = async () => {
-      if(!confirm('确定删除密钥 ' + b.dataset.del + ' ？文件会从 accounts/ 目录移除。')) return;
+      if(!confirm('确定删除凭据 ' + b.dataset.del + ' ？')) return;
       try{
         await api('/api/accounts/' + encodeURIComponent(b.dataset.del), {method:'DELETE'});
         toast('已删除', 'ok'); loadState(); loadAccounts();
@@ -1060,8 +1059,7 @@ async function loadAccounts(){
     });
     const bad = accounts.filter(a => !a.ok || a.error).length;
     $('#verifyHint').textContent = accounts.length
-      ? (bad ? bad + ' 个账号需要处理' : '全部 ' + accounts.length + ' 个账号正常')
-      : '';
+      ? (bad ? bad + ' 个凭据需要处理' : '全部 ' + accounts.length + ' 个凭据正常') : '';
   }catch(e){ $('#verifyHint').textContent = ''; toast(e.message, 'err'); }
 }
 $('#btnVerify').onclick = loadAccounts;
@@ -1075,20 +1073,16 @@ function renderOauth(st){
   $('#oauthSetup').classList.toggle('hide', st.has_client);
   $('#oauthReady').classList.toggle('hide', !st.has_client);
   $('#oauthClientHint').textContent = st.has_client
-    ? '客户端已就绪' + (st.client_project ? '（项目 ' + st.client_project + '）' : '')
-    : '';
-  const box = $('#oauthAccounts');
-  if(!st.accounts.length){ box.innerHTML = ''; return; }
-  box.innerHTML = st.accounts.map(a => `
-    <div class="row" style="justify-content:space-between;padding:9px 12px;border:1px solid var(--border);
-      border-radius:8px;background:var(--panel2);margin-top:8px">
+    ? '客户端已就绪' + (st.client_project ? '（项目 ' + st.client_project + '）' : '') : '';
+  $('#oauthAccounts').innerHTML = st.accounts.length ? st.accounts.map(a => `
+    <div class="loginbox">
       <span>已连接 <b>${esc(a.email || a.name)}</b>
-        <span class="hint">${a.project_id ? '项目 ' + esc(a.project_id) + ' · ' : ''}今日已用 ${a.submit_used}/${a.submit_limit}</span>
+        <span class="hint">${a.project_id ? '项目 ' + esc(a.project_id) + ' · ' : ''}今日查询 ${a.inspect_used}/${a.inspect_limit}</span>
       </span>
       <button class="btn sm danger" data-revoke="${esc(a.name)}">解除授权</button>
-    </div>`).join('');
+    </div>`).join('') : '';
   $$('#oauthAccounts [data-revoke]').forEach(b => b.onclick = async () => {
-    if(!confirm('解除对 ' + b.dataset.revoke + ' 的授权？会同时通知 Google 撤销，之后需要重新授权才能使用。')) return;
+    if(!confirm('解除对 ' + b.dataset.revoke + ' 的授权？会同时通知 Google 撤销。')) return;
     try{
       await api('/api/accounts/' + encodeURIComponent(b.dataset.revoke), {method:'DELETE'});
       toast('已解除授权', 'ok');
@@ -1096,18 +1090,15 @@ function renderOauth(st){
     }catch(e){ toast(e.message, 'err'); }
   });
 }
-
 async function loadOauthStatus(){
-  try{ renderOauth(await api('/api/oauth/status')); }
-  catch(e){ /* 首次加载失败不打扰用户 */ }
+  try{ renderOauth(await api('/api/oauth/status')); }catch(e){}
 }
-
 async function uploadOauthClient(files){
   const fd = new FormData();
   fd.append('files', files[0]);
   try{
     const r = await api('/api/accounts/upload', {method:'POST', body: fd});
-    if(r.failed.length){ r.failed.forEach(x => toast(x.file + '：' + x.error, 'err')); }
+    r.failed.forEach(x => toast(x.file + '：' + x.error, 'err'));
     if(r.saved.some(x => x.oauth_client)){
       toast('OAuth 客户端已就绪，点「开始授权」继续', 'ok');
       loadOauthStatus();
@@ -1140,7 +1131,6 @@ $('#btnOauthLogin').onclick = async () => {
     }, 2000);
   }catch(e){ toast(e.message, 'err'); }
 };
-
 $('#btnOauthReplace').onclick = async () => {
   try{
     await api('/api/oauth/client', {method:'DELETE'});
@@ -1150,39 +1140,36 @@ $('#btnOauthReplace').onclick = async () => {
   }catch(e){ toast(e.message, 'err'); }
 };
 
-/* ---------------- 收录查询 ---------------- */
-$('#btnInspect').onclick = async () => {
-  if(!site()) return toast('请先在顶部选择站点', 'err');
-  const text = $('#inspText').value;
-  if(!text.trim()) return toast('还没有任何 URL', 'err');
-  $('#inspResCard').classList.add('hide');
+/* ---------------- 浏览器登录 ---------------- */
+$('#btnWebLogin').onclick = async () => {
   try{
-    const { job_id } = await api('/api/analyze', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({text, site_url: site(), inspect: true, force: true, account: S.acctFilter})});
-    watchJob(job_id, {card:'#inspJobCard', log:'#inspLog', fill:'#inspFill', phase:'#inspPhase', count:'#inspCount'}, j => {
-      if(!j.result) return;
-      S.inspRows = j.result.rows;
-      const ind = S.inspRows.filter(r => r.verdict === 'PASS').length;
-      $('#inspResCard').classList.remove('hide');
-      $('#inspSub').textContent = `共 ${S.inspRows.length} 条，已收录 ${ind} 条，未收录 ${S.inspRows.length - ind} 条`;
-      $('#inspBody').innerHTML = S.inspRows.map(r => `<tr>
-        <td class="u">${esc(r.url)}</td>
-        <td><span class="pill p-${r.verdict === 'PASS' ? 'indexed' : r.verdict ? 'recent' : 'unknown'}">${esc(r.verdict || '未知')}</span></td>
-        <td>${esc(r.coverage || r.note || '—')}</td>
-        <td class="num">${r.last_crawl ? esc(localDate(r.last_crawl)) : '—'}</td>
-      </tr>`).join('');
+    const { job_id } = await api('/api/webauto/login', {method:'POST'});
+    $('#webLoginHint').textContent = '已打开浏览器窗口，请在里面登录…';
+    $('.tab[data-p="scan"]').click();  // 进度显示在扫描页的任务卡里
+    watchJob(job_id, '浏览器登录', async j => {
+      $('#webLoginHint').textContent = '';
+      const r = j.result || {};
+      toast(r.message || '登录流程结束', r.ok ? 'ok' : 'err');
+      await loadWebautoStatus();
     });
   }catch(e){ toast(e.message, 'err'); }
 };
-$('#expInsp').onclick = () => {
-  if(!S.inspRows.length) return toast('还没有可导出的结果', 'err');
-  download('gsc-收录状态.csv', toCsv(S.inspRows,
-    [['URL','url'],['判定','verdict'],['收录情况','coverage'],['上次抓取','last_crawl'],['备注','note']]));
+$('#btnWebLogout').onclick = async () => {
+  if(!confirm('清除浏览器登录状态？会删掉整个 browser_profile 目录，之后需要重新登录才能申请收录。')) return;
+  try{
+    await api('/api/webauto/login', {method:'DELETE'});
+    toast('已清除浏览器登录', 'ok');
+    await loadWebautoStatus();
+  }catch(e){ toast(e.message, 'err'); }
 };
 
 /* ---------------- 统计 ---------------- */
+const SRC_CN = {
+  webauto: ['网页自动化', '现在用的方式：自动点 GSC 网页上的「请求编入索引」'],
+  indexing_api: ['旧 Indexing API', '已从本工具移除。官方只声明支持 JobPosting / BroadcastEvent，普通网页不保证效果'],
+};
 function chart(daily){
-  if(!daily.length) return '<div class="empty">还没有提交记录</div>';
+  if(!daily.length) return '<div class="empty">还没有记录</div>';
   const W = 100, H = 150, pad = 22, n = daily.length;
   const max = Math.max(1, ...daily.map(d => d.ok + d.fail));
   const bw = (W - 4) / n;
@@ -1192,66 +1179,67 @@ function chart(daily){
     const h = (total / max) * (H - pad - 14);
     const okH = total ? h * (d.ok / total) : 0;
     const y = H - pad - h;
-    if(d.ok) bars += `<rect x="${x + bw*0.15}" y="${y}" width="${bw*0.7}" height="${Math.max(0.6, okH)}"
+    if(d.ok) bars += `<rect x="${x+bw*0.15}" y="${y}" width="${bw*0.7}" height="${Math.max(0.6,okH)}"
       fill="var(--ok)" rx="0.5"><title>${d.d} 成功 ${d.ok}</title></rect>`;
-    if(d.fail) bars += `<rect x="${x + bw*0.15}" y="${y + okH}" width="${bw*0.7}" height="${Math.max(0.6, h - okH)}"
+    if(d.fail) bars += `<rect x="${x+bw*0.15}" y="${y+okH}" width="${bw*0.7}" height="${Math.max(0.6,h-okH)}"
       fill="var(--err)" rx="0.5"><title>${d.d} 失败 ${d.fail}</title></rect>`;
-    if(total) labels += `<text x="${x + bw/2}" y="${y - 3}" font-size="4" fill="var(--muted)"
-      text-anchor="middle">${total}</text>`;
-    labels += `<text x="${x + bw/2}" y="${H - pad + 8}" font-size="4" fill="var(--faint)"
-      text-anchor="middle">${d.d.slice(5)}</text>`;
+    if(total) labels += `<text x="${x+bw/2}" y="${y-3}" font-size="4" fill="var(--muted)" text-anchor="middle">${total}</text>`;
+    labels += `<text x="${x+bw/2}" y="${H-pad+8}" font-size="4" fill="var(--faint)" text-anchor="middle">${d.d.slice(5)}</text>`;
   });
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:230px" preserveAspectRatio="none">
     <line x1="2" y1="${H-pad}" x2="${W-2}" y2="${H-pad}" stroke="var(--border)" stroke-width="0.4"/>
     ${bars}${labels}</svg>`;
 }
-
 async function loadStats(){
   try{
     const s = await api('/api/stats');
-    const rate = s.submitted ? Math.round(s.indexed / s.submitted * 100) : 0;
     $('#statCards').innerHTML = [
-      ['累计 URL', s.total], ['已提交过', s.submitted],
-      ['预检为已收录', s.indexed], ['收录率', rate + '<small>%</small>']
-    ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+      ['累计发现 URL', s.total],
+      ['预检为已收录', s.indexed],
+      ['待办池未完成', s.pending_open],
+      ['其中从未申请', s.pending_never],
+    ].map(([k,v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
     $('#chart').innerHTML = chart(s.daily || []);
-    $('#failBody').innerHTML = (s.failures || []).length
-      ? s.failures.map(f => `<tr><td class="num">${f.status}</td><td class="num">${f.n}</td>
-          <td class="u">${esc((f.sample || '').slice(0,160))}</td></tr>`).join('')
-      : '<tr><td colspan="3"><div class="empty">还没有失败记录</div></td></tr>';
-    S.logOffset = 0; loadLogs();
+    $('#srcBody').innerHTML = (s.sources || []).length ? s.sources.map(b => {
+      const cn = SRC_CN[b.source] || [b.source, ''];
+      return `<tr><td><b>${esc(cn[0])}</b><div class="note">${esc(b.source)}</div></td>
+        <td class="num">${b.total}</td><td class="num">${b.ok}</td>
+        <td class="hint">${esc(cn[1])}</td></tr>`;
+    }).join('') : '<tr><td colspan="4"><div class="empty">还没有记录</div></td></tr>';
+    loadLogs();
   }catch(e){ toast(e.message, 'err'); }
 }
-
 async function loadLogs(){
   try{
     const q = $('#logQ').value.trim();
-    const r = await api(`/api/logs?limit=100&offset=${S.logOffset}&q=${encodeURIComponent(q)}`);
-    $('#logBody').innerHTML = r.rows.length ? r.rows.map(l => `<tr>
-      <td class="num">${esc(localTime(l.ts))}</td>
-      <td>${esc(l.account || '—')}</td>
-      <td class="u">${esc(l.url || '')}</td>
-      <td>${esc(l.action)}</td>
-      <td><span class="pill p-${l.status === 200 ? 'indexed' : 'err'}">${l.status ?? '—'}</span></td>
-      <td class="note" style="margin:0">${esc((l.message || '').slice(0,160))}</td>
-    </tr>`).join('') : '<tr><td colspan="6"><div class="empty">没有日志记录</div></td></tr>';
+    const r = await api('/api/logs?limit=150&q=' + encodeURIComponent(q));
+    $('#logBody').innerHTML = r.rows.length ? r.rows.map(l => {
+      const cn = SRC_CN[l.source] || [l.source || '?', ''];
+      return `<tr>
+        <td class="num">${esc(localTime(l.ts))}</td>
+        <td>${esc(cn[0])}</td>
+        <td class="u">${esc(l.url || '')}</td>
+        <td><span class="pill p-${l.status === 200 ? 'ok' : 'err'}">${l.status ?? '—'}</span></td>
+        <td class="hint">${esc((l.message||'').slice(0,160))}</td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="5"><div class="empty">没有日志</div></td></tr>';
     $('#logMore').textContent = r.total > r.rows.length
-      ? `显示最近 ${r.rows.length} 条，共 ${r.total} 条` : (r.total ? '共 ' + r.total + ' 条' : '');
+      ? '显示最近 ' + r.rows.length + ' 条，共 ' + r.total + ' 条' : (r.total ? '共 ' + r.total + ' 条' : '');
   }catch(e){ toast(e.message, 'err'); }
 }
-$('#btnLogSearch').onclick = () => { S.logOffset = 0; loadLogs(); };
-$('#btnLogRefresh').onclick = () => { S.logOffset = 0; $('#logQ').value = ''; loadLogs(); };
-$('#logQ').onkeydown = e => { if(e.key === 'Enter'){ S.logOffset = 0; loadLogs(); } };
+$('#btnLogSearch').onclick = loadLogs;
+$('#btnLogRefresh').onclick = () => { $('#logQ').value = ''; loadLogs(); };
+$('#logQ').onkeydown = e => { if(e.key === 'Enter') loadLogs(); };
 
 /* ---------------- 设置 ---------------- */
 $('#btnSaveCfg').onclick = async () => {
   const patch = {};
-  ['site_url','daily_quota_per_account','inspect_daily_quota','concurrency','batch_size',
-   'resubmit_after_days','request_timeout','max_retries','port'].forEach(k => {
+  ['site_url','inspect_daily_quota','concurrency','scan_limit','request_timeout','max_retries',
+   'webauto_daily_limit','webauto_min_delay','webauto_max_delay','port'].forEach(k => {
     const el = $('#cf_' + k);
-    patch[k] = el.type === 'number' ? Number(el.value) : el.value;
+    if(el) patch[k] = el.type === 'number' ? Number(el.value) : el.value;
   });
-  patch.inspect_before_submit = $('#cf_inspect_before_submit').checked;
+  patch.webauto_headless = $('#cf_webauto_headless').checked;
   try{
     const r = await api('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(patch)});
@@ -1267,7 +1255,7 @@ $('#btnSaveCfg').onclick = async () => {
 (async function init(){
   await loadState();
   loadOauthStatus();
-  loadSites();
+  await loadSites();
 })();
 </script>
 </body>

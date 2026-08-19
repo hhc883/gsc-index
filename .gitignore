@@ -1,12 +1,14 @@
-accounts/*.json
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/oauth_client.json
+# 凭据目录：OAuth 授权、服务账号密钥、浏览器登录状态
+# 整个目录排除。browser_profile/ 里是等同于已登录账号的完整浏览器数据，
+# 比 OAuth token 更敏感，绝对不能进版本库。
+accounts/
+
+# 本地数据库、OAuth 客户端配置
+data/
+
 config.json
 __pycache__/
 *.pyc
 .venv/
 .claude/
-.vscode/
 *.log
