@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCHEMA = """

@@ -152,6 +152,15 @@ RESULT_QUOTA_PATTERNS = [r"超出了配额", r"超出了.*每日配额", r"quota
 RESULT_ALREADY_PATTERNS = [r"最近.*(检查|请求)过", r"recently (checked|requested)"]
 
 
+def _pattern_or(patterns: list[str]) -> str:
+    """把多个正则拼成一个"任一匹配"的模式，用于 get_by_role 的 name 参数。
+
+    定义在这里（紧跟上面几组模式表）而不是文件末尾——它只服务于这些常量，
+    放远了容易在重构时被连带删掉。
+    """
+    return "|".join(patterns)
+
+
 class ChallengeDetected(Exception):
     """页面出现验证码/安全验证，必须整体停止，不能继续自动化。"""
 
