@@ -483,20 +483,46 @@ def api_scan(body: dict = Body(...)):
     return {"job_id": start_job("scan", run).id}
 
 
-@app.get("/api/pending")
-def api_pending(site_url: str = "", include_done: bool = False, all_sites: bool = False):
-    """扫描结果清单，跨天保留。
+@app.get("/api/links")
+def api_links(
+    site_url: str = "",
+    index_state: str = "",
+    requested: str = "",
+    all_sites: bool = False,
+):
+    """站点链接清单：扫描发现的全部 URL，不管有没有收录。
 
-    include_done=True 会把已收录的也返回（界面上"全部/已收录"两个视图要用）。
-    all_sites=True 时返回全部站点——注意不能用"site_url 为空就回退到 cfg.site_url"，
+    index_state 传 indexed / not_indexed / unknown 做筛选，空表示全部。
+    requested 传 yes / no 按有没有通过本工具申请过筛选。
+    all_sites=True 返回全部站点——不能用"site_url 为空就回退到 cfg.site_url"，
     那样"全站点明细"永远只能拿到当前站点的数据。
     """
     site = "" if all_sites else (site_url or cfg.site_url)
     return {
-        "rows": store.pending_list(site, include_done=include_done),
-        "counts": store.pending_counts(),
+        "rows": store.url_list(site, index_state=index_state, requested=requested),
+        "counts": store.url_counts(),
         "webauto": engine.webauto_overview(site or cfg.site_url),
+        "recheck_pending": len(store.urls_to_recheck(site)),
     }
+
+
+@app.post("/api/recheck")
+def api_recheck(body: dict = Body(...)):
+    """复查收录状态：重新查询这些链接现在收录了没。
+
+    不传 urls 时默认复查"申请过、但还没确认收录"的那些。
+    只花查询配额，不消耗申请名额。
+    """
+    site = (body.get("site_url") or cfg.site_url).strip()
+    urls = body.get("urls")
+    account = (body.get("account") or "").strip()
+    if not site:
+        return JSONResponse({"error": "请先选择站点"}, status_code=400)
+
+    def run(emit, _stop):
+        return engine.recheck(site, urls, account_name=account, emit=emit)
+
+    return {"job_id": start_job("recheck", run).id}
 
 
 @app.post("/api/webauto/submit")

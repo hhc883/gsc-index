@@ -223,7 +223,7 @@ ol.steps b{color:var(--text)}
 
 <nav><div class="tabs">
   <button class="tab on" data-p="scan">扫描与提交</button>
-  <button class="tab" data-p="pending">未收录清单</button>
+  <button class="tab" data-p="pending">链接清单</button>
   <button class="tab" data-p="accounts">账号管理</button>
   <button class="tab" data-p="stats">历史统计</button>
   <button class="tab" data-p="settings">设置</button>
@@ -269,22 +269,23 @@ ol.steps b{color:var(--text)}
 
   <div class="card">
     <h2>第二步：挑几条去申请收录</h2>
-    <p class="sub" id="scanPendSub">默认只显示未收录的。已收录的可以切到「已收录」查看，但不能勾选。</p>
+    <p class="sub" id="scanPendSub">默认只显示未收录的。已收录的可切到「已收录」查看，但不能勾选。</p>
     <div class="chips" id="pendChips"></div>
     <div class="row" style="margin-bottom:11px">
       <button class="btn sm" id="selTop">按剩余名额自动勾选</button>
       <button class="btn sm" id="selNone">全不选</button>
       <button class="btn sm" id="expCsv">导出 CSV</button>
       <div class="spacer"></div>
+      <button class="btn" id="btnRecheck">复查收录状态</button>
       <button class="btn primary" id="btnRequest" disabled>申请收录（选中 0 条）</button>
     </div>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
         <th class="c"><input type="checkbox" id="thAll"></th>
-        <th>URL</th><th style="width:150px">Google 收录情况</th>
-        <th style="width:120px">状态</th><th style="width:110px">上次申请</th>
+        <th>URL</th><th style="width:160px">Google 收录状态</th>
+        <th style="width:130px">本工具申请记录</th><th style="width:105px">上次查询</th>
       </tr></thead>
-      <tbody id="pendBody"><tr><td colspan="5"><div class="empty">先扫描一次，或到「未收录清单」看其他站点</div></td></tr></tbody>
+      <tbody id="pendBody"><tr><td colspan="5"><div class="empty">先扫描一次，或到「链接清单」看其他站点</div></td></tr></tbody>
     </table></div></div>
     <p class="hint" id="pendMore" style="margin:9px 0 0"></p>
   </div>
@@ -293,32 +294,35 @@ ol.steps b{color:var(--text)}
 <!-- ============ 未收录清单 ============ -->
 <section id="p-pending" class="hide">
   <div class="card">
-    <h2>各站点待办概览</h2>
+    <h2>各站点链接概览</h2>
     <p class="sub">
-      跨天保留的待办池。每个站点每天能申请的次数很有限，这份清单让你分多天慢慢消化，
-      已确认收录的会在下次扫描时自动移出。
+      扫描发现的全部链接及其收录状态，跨天保留。
+      「已收录 / 未收录」是 Google 的判定，跟有没有通过本工具申请过无关——
+      一条从没申请过的页面完全可能本来就是收录的。
     </p>
     <div class="row" style="margin-bottom:12px">
       <button class="btn sm" id="btnReloadPend">刷新</button>
-      <label class="chk"><input type="checkbox" id="pendIncludeDone" checked>包含已收录的</label>
+      <button class="btn sm" id="btnRecheckAll">复查全部申请过的</button>
+      <span class="hint" id="recheckAllHint">列出扫描发现的全部链接，含已收录的</span>
     </div>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
-        <th>站点</th><th style="width:90px">扫到</th><th style="width:90px">已收录</th>
-        <th style="width:90px">未收录</th><th style="width:100px">从未申请</th>
-        <th style="width:110px">已申请</th><th style="width:90px"></th>
+        <th>站点</th><th style="width:80px">全部</th><th style="width:90px">已收录</th>
+        <th style="width:90px">未收录</th><th style="width:85px">未查明</th>
+        <th style="width:100px">从未申请</th><th style="width:95px">已申请</th>
+        <th style="width:90px"></th>
       </tr></thead>
-      <tbody id="pendSiteBody"><tr><td colspan="7"><div class="empty">还没有记录，先去扫描</div></td></tr></tbody>
+      <tbody id="pendSiteBody"><tr><td colspan="8"><div class="empty">还没有记录，先去扫描</div></td></tr></tbody>
     </table></div></div>
   </div>
 
   <div class="card">
-    <h2>全部待办明细</h2>
+    <h2>全部链接明细</h2>
     <p class="sub" id="allPendSub"></p>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
-        <th>站点</th><th>URL</th><th style="width:140px">收录情况</th>
-        <th style="width:110px">申请状态</th><th style="width:105px">上次申请</th>
+        <th>站点</th><th>URL</th><th style="width:150px">Google 收录状态</th>
+        <th style="width:120px">申请记录</th><th style="width:105px">上次查询</th>
       </tr></thead>
       <tbody id="allPendBody"><tr><td colspan="5"><div class="empty">（空）</div></td></tr></tbody>
     </table></div></div>
@@ -549,7 +553,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 
 const S = {
   cfg:{}, quota:null, webauto:null, sites:[], acctFilter:'',
-  pend:[], allPend:[], oauth:null, currentJob:null,
+  pend:[], allPend:[], oauth:null, currentJob:null, recheckPending:0,
 };
 
 async function api(path, opts){
@@ -813,7 +817,7 @@ $('#btnScan').onclick = async () => {
     watchJob(job_id, '扫描中', j => {
       const r = j.result || {};
       if(r.error) return;
-      toast(`扫描完成：未收录 ${r.pending || 0} 条已进待办池`, 'ok');
+      toast(`扫描完成：已收录 ${r.resolved || 0} 条、未收录 ${r.pending || 0} 条`, 'ok');
       loadPending();
     });
   }catch(e){ toast(e.message, 'err'); }
@@ -832,19 +836,21 @@ $('#btnSubmitSitemap').onclick = async () => {
 };
 
 /* ---------------- 待办池（当前站点，用于挑选提交） ---------------- */
-/* 分类：done=已被 Google 收录；never/waiting 都属于未收录，按有没有申请过再分 */
+/* 分类完全基于 Google 给的 index_state，跟"有没有通过本工具申请过"无关。
+   一条从没申请过的页面完全可能本来就是收录的。 */
 const PEND_CHIPS = [
-  ['all','全部'], ['open','未收录'], ['never','未收录·从未申请'],
-  ['waiting','未收录·已申请'], ['done','已收录'],
+  ['all','全部'], ['not_indexed','未收录'], ['indexed','已收录'],
+  ['unknown','未查明'], ['req_no','未收录·从未申请'], ['req_yes','未收录·已申请'],
 ];
-let pendFilter = 'open';   // 默认只看未收录的，这才是需要处理的部分
+let pendFilter = 'not_indexed';   // 默认只看未收录的，这才是需要处理的部分
 
 async function loadPending(){
   if(!site()) return;
   try{
-    // include_done=true 才会把已收录的也返回，"全部/已收录"两个视图需要它
-    const r = await api('/api/pending?include_done=true&site_url=' + encodeURIComponent(site()));
+    // 一次拿全量（不带 index_state 过滤），前端本地切换分类，避免每次点筛选都请求
+    const r = await api('/api/links?site_url=' + encodeURIComponent(site()));
     S.pend = r.rows.map(x => ({...x, selected:false}));
+    S.recheckPending = r.recheck_pending || 0;
     S.webauto = r.webauto;
     renderQuota();
     renderPendChips();
@@ -852,21 +858,20 @@ async function loadPending(){
   }catch(e){ toast('读取待办失败：' + e.message, 'err'); }
 }
 
-/* 单条的精确状态：已收录 / 未收录且从未申请 / 未收录但申请过 */
-function pendState(r){
-  if(r.done_at) return 'done';
-  return r.requested_at ? 'waiting' : 'never';
-}
+/* Google 的收录判定，这是"已收录"唯一依据 */
+function pendState(r){ return r.index_state || 'unknown'; }
 /* 已收录的不需要再申请，不允许勾选 */
-function pendSelectable(r){ return !r.done_at; }
+function pendSelectable(r){ return r.index_state !== 'indexed'; }
 
 function renderPendChips(){
+  const notIdx = S.pend.filter(r => pendState(r) === 'not_indexed');
   const counts = {
     all: S.pend.length,
-    open: S.pend.filter(r => pendState(r) !== 'done').length,
-    never: S.pend.filter(r => pendState(r) === 'never').length,
-    waiting: S.pend.filter(r => pendState(r) === 'waiting').length,
-    done: S.pend.filter(r => pendState(r) === 'done').length,
+    not_indexed: notIdx.length,
+    indexed: S.pend.filter(r => pendState(r) === 'indexed').length,
+    unknown: S.pend.filter(r => pendState(r) === 'unknown').length,
+    req_no: notIdx.filter(r => !r.requested_at).length,
+    req_yes: notIdx.filter(r => r.requested_at).length,
   };
   $('#pendChips').innerHTML = PEND_CHIPS
     .map(([k,label]) => `<button class="chip${k===pendFilter?' on':''}" data-f="${k}">${label} <b>${counts[k]}</b></button>`)
@@ -876,35 +881,51 @@ function renderPendChips(){
     renderPendChips(); renderPend();
   });
   const w = S.webauto || {};
-  const open = counts.open, done = counts.done;
   $('#scanPendSub').textContent =
-    `当前站点扫到 ${S.pend.length} 条：已收录 ${done} 条、未收录 ${open} 条。`
-    + `今日本地还剩 ${w.left ?? '?'} 次申请名额（Google 真实上限未公开，可能提前撞上限流）。`;
+    `当前站点共 ${S.pend.length} 条链接：已收录 ${counts.indexed} 条、未收录 ${counts.not_indexed} 条`
+    + (counts.unknown ? `、未查明 ${counts.unknown} 条` : '')
+    + `。今日本地还剩 ${w.left ?? '?'} 次申请名额（Google 真实上限未公开，可能提前撞上限流）。`;
+  // 复查按钮上标出有多少条待复查
+  const rb = $('#btnRecheck');
+  if(rb){
+    const n = S.recheckPending || 0;
+    rb.textContent = n ? `复查申请过的（${n} 条）` : '复查收录状态';
+    rb.title = n
+      ? `重新查询这 ${n} 条"申请过但还没确认收录"的链接。只花查询配额，不消耗申请名额。`
+      : '当前没有"申请过但还没确认收录"的链接。可以先勾选一些再点这里，只复查选中的。';
+  }
 }
 
 function visiblePend(){
   if(pendFilter === 'all') return S.pend;
-  if(pendFilter === 'open') return S.pend.filter(r => pendState(r) !== 'done');
+  if(pendFilter === 'req_no')
+    return S.pend.filter(r => pendState(r) === 'not_indexed' && !r.requested_at);
+  if(pendFilter === 'req_yes')
+    return S.pend.filter(r => pendState(r) === 'not_indexed' && r.requested_at);
   return S.pend.filter(r => pendState(r) === pendFilter);
 }
 
 function renderPend(){
   const rows = visiblePend(), CAP = 300, shown = rows.slice(0, CAP);
-  const LABEL = { done:'已收录', never:'从未申请', waiting:'已申请' };
+  const STATE_PILL = { indexed:['ok','已收录'], not_indexed:['never','未收录'], unknown:['unknown','未查明'] };
   $('#pendBody').innerHTML = shown.length ? shown.map(r => {
     const i = S.pend.indexOf(r);
     const st = pendState(r);
     const sel = pendSelectable(r);
-    const label = st === 'waiting' ? '已申请 ' + r.request_count + ' 次' : LABEL[st];
+    const [cls, label] = STATE_PILL[st] || ['unknown', st];
     return `<tr${sel ? '' : ' style="opacity:.62"'}>
       <td class="c">${sel
         ? `<input type="checkbox" data-i="${i}"${r.selected?' checked':''}>`
-        : '<span class="hint" title="已被 Google 收录，无需再申请">—</span>'}</td>
+        : '<span class="hint" title="Google 已收录，无需再申请">—</span>'}</td>
       <td class="u">${esc(r.url)}</td>
-      <td>${esc(r.coverage || '—')}</td>
-      <td><span class="pill p-${st === 'done' ? 'ok' : st}">${label}</span>
-        ${r.last_result && r.last_result !== 'success' ? '<div class="note">' + esc(r.last_result) + '</div>' : ''}</td>
-      <td class="num">${r.requested_at ? esc(localDate(r.requested_at)) : '—'}</td>
+      <td><span class="pill p-${cls}">${label}</span>
+        ${r.coverage ? '<div class="note">' + esc(r.coverage) + '</div>' : ''}</td>
+      <td>${r.requested_at
+        ? `<span class="pill p-waiting">已申请 ${r.request_count} 次</span>`
+          + (r.last_result && r.last_result !== 'success'
+              ? '<div class="note">' + esc(r.last_result) + '</div>' : '')
+        : '<span class="hint">未申请</span>'}</td>
+      <td class="num">${r.last_checked ? esc(localDate(r.last_checked)) : '—'}</td>
     </tr>`;
   }).join('') : '<tr><td colspan="5"><div class="empty">该筛选下没有记录</div></td></tr>';
 
@@ -931,9 +952,9 @@ $('#selTop').onclick = () => {
   const left = (S.webauto && S.webauto.left) ?? 0;
   S.pend.forEach(r => r.selected = false);
   // 优先挑从没申请过的，名额有限就交这些最值
-  const vis = visiblePend().filter(pendSelectable);
-  const cands = vis.filter(r => pendState(r) === 'never')
-    .concat(vis.filter(r => pendState(r) === 'waiting'));
+  // 只挑未收录的，且从没申请过的优先——名额稀缺，别浪费在已经交过的上
+  const vis = visiblePend().filter(r => pendState(r) === 'not_indexed');
+  const cands = vis.filter(r => !r.requested_at).concat(vis.filter(r => r.requested_at));
   cands.slice(0, left).forEach(r => r.selected = true);
   renderPend();
   if(!left) toast('今日本地名额已用完', 'err');
@@ -965,6 +986,27 @@ $('#btnRequest').onclick = async () => {
   }catch(e){ toast(e.message, 'err'); }
 };
 
+/* 复查：重新查 Google 现在到底收录了没。选中了就只查选中的，
+   没选中就查"申请过但还没确认收录"的那批。只花查询配额，不动申请名额。 */
+$('#btnRecheck').onclick = async () => {
+  if(!site()) return toast('请先在顶部选择站点', 'err');
+  const picked = selectedPend().map(r => r.url);
+  const body = { site_url: site(), account: S.acctFilter };
+  if(picked.length) body.urls = picked;
+  else if(!S.recheckPending) return toast('没有需要复查的链接。可以先勾选一些再点', 'err');
+  try{
+    const { job_id } = await api('/api/recheck', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    $('#jobCard').scrollIntoView({behavior:'smooth', block:'nearest'});
+    watchJob(job_id, '复查收录状态中', j => {
+      const r = j.result || {};
+      toast(`复查完成：新确认收录 ${r.newly_indexed||0} 条，仍未收录 ${r.still_not||0} 条`,
+            r.newly_indexed ? 'ok' : null);
+      loadPending();
+    });
+  }catch(e){ toast(e.message, 'err'); }
+};
+
 function toCsv(rows, cols){
   const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
   return '﻿' + [cols.map(c => q(c[0])).join(',')]
@@ -978,25 +1020,26 @@ function download(name, text){
 }
 $('#expCsv').onclick = () => {
   if(!S.pend.length) return toast('没有可导出的内容', 'err');
-  download('未收录清单.csv', toCsv(visiblePend(),
-    [['站点','site'],['URL','url'],['收录情况','coverage'],['判定','verdict'],
+  download('站点链接清单.csv', toCsv(visiblePend(),
+    [['站点','site'],['URL','url'],['收录状态','index_state'],['收录情况','coverage'],
+     ['判定','verdict'],['上次查询','last_checked'],
      ['申请次数','request_count'],['上次申请','requested_at'],['上次结果','last_result']]));
 };
 
 /* ---------------- 未收录清单（全站点） ---------------- */
 async function loadAllPending(){
   try{
-    const inc = $('#pendIncludeDone').checked ? 'true' : 'false';
-    const r = await api('/api/pending?all_sites=true&include_done=' + inc);
+    const r = await api('/api/links?all_sites=true');
     $('#pendSiteBody').innerHTML = r.counts.length ? r.counts.map(c => `<tr>
       <td class="u">${esc(c.site)}</td>
       <td class="num">${c.total}</td>
       <td class="num" style="color:var(--ok)">${c.indexed}</td>
-      <td class="num"><b>${c.pending}</b></td>
-      <td class="num">${c.never}</td>
-      <td class="num">${c.waiting}</td>
+      <td class="num"><b>${c.not_indexed}</b></td>
+      <td class="num">${c.unknown || 0}</td>
+      <td class="num">${c.never_requested}</td>
+      <td class="num">${c.requested}</td>
       <td><button class="btn sm" data-go="${esc(c.site)}">去处理</button></td>
-    </tr>`).join('') : '<tr><td colspan="7"><div class="empty">还没有记录，先去扫描</div></td></tr>';
+    </tr>`).join('') : '<tr><td colspan="8"><div class="empty">还没有记录，先去扫描</div></td></tr>';
     $$('#pendSiteBody [data-go]').forEach(b => b.onclick = () => {
       ensureSiteOption(b.dataset.go);
       $('#site').dispatchEvent(new Event('change'));
@@ -1006,24 +1049,41 @@ async function loadAllPending(){
     S.allPend = r.rows;
     const CAP = 500, shown = S.allPend.slice(0, CAP);
     $('#allPendSub').textContent = '共 ' + S.allPend.length + ' 条';
-    const LABEL2 = { done:'已收录', never:'从未申请', waiting:'已申请' };
+    const PILL2 = { indexed:['ok','已收录'], not_indexed:['never','未收录'], unknown:['unknown','未查明'] };
     $('#allPendBody').innerHTML = shown.length ? shown.map(r2 => {
-      const stRaw = pendState(r2);
-      const st = stRaw === 'done' ? 'ok' : stRaw;
-      const label = stRaw === 'waiting' ? '已申请 ' + r2.request_count + ' 次' : LABEL2[stRaw];
+      const [cls, label] = PILL2[pendState(r2)] || ['unknown', pendState(r2)];
       return `<tr>
         <td class="u">${esc(r2.site)}</td>
         <td class="u">${esc(r2.url)}</td>
-        <td>${esc(r2.coverage || '—')}</td>
-        <td><span class="pill p-${st}">${label}</span></td>
-        <td class="num">${r2.requested_at ? esc(localDate(r2.requested_at)) : '—'}</td>
+        <td><span class="pill p-${cls}">${label}</span>
+          ${r2.coverage ? '<div class="note">' + esc(r2.coverage) + '</div>' : ''}</td>
+        <td>${r2.requested_at ? '已申请 ' + r2.request_count + ' 次' : '<span class="hint">未申请</span>'}</td>
+        <td class="num">${r2.last_checked ? esc(localDate(r2.last_checked)) : '—'}</td>
       </tr>`;
     }).join('') : '<tr><td colspan="5"><div class="empty">（空）</div></td></tr>';
     $('#allPendMore').textContent = S.allPend.length > CAP ? '只显示前 ' + CAP + ' 条' : '';
   }catch(e){ toast(e.message, 'err'); }
 }
 $('#btnReloadPend').onclick = loadAllPending;
-$('#pendIncludeDone').onchange = loadAllPending;
+
+/* 链接清单页的复查入口：一次复查当前站点所有"申请过但还没确认收录"的链接。
+   跟扫描页那个按钮走同一个接口，只是这里不看勾选、直接全查。 */
+$('#btnRecheckAll').onclick = async () => {
+  if(!site()) return toast('请先在顶部选择站点', 'err');
+  try{
+    const { job_id } = await api('/api/recheck', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({site_url: site(), account: S.acctFilter})});
+    $('.tab[data-p="scan"]').click();   // 进度显示在扫描页的任务卡里
+    watchJob(job_id, '复查收录状态中', j => {
+      const r = j.result || {};
+      toast(`复查完成：新确认收录 ${r.newly_indexed||0} 条，仍未收录 ${r.still_not||0} 条`,
+            r.newly_indexed ? 'ok' : null);
+      loadPending();
+      loadAllPending();
+    });
+  }catch(e){ toast(e.message, 'err'); }
+};
 
 /* ---------------- 凭据上传与列表 ---------------- */
 function wireDrop(dropId, inputId, handler){

@@ -1,12 +1,15 @@
-"""SQLite 状态存储：URL 历史、待办池、每日配额、操作日志。
+"""SQLite 状态存储：站点链接清单、每日配额、操作日志。
 
 表的职责划分：
-* urls        —— 每个 URL 的历史（何时预检过、收录状态、提交过几次）
-* pending     —— 未收录待办池，跨天持久化。真实的网页提交名额很有限，
-                 一次扫描出的几十上百条未收录 URL 要分好几天才交得完，
-                 所以必须存下来，而不是每次扫完就丢。
-* quota       —— 按天计的 API 配额（现在只剩收录预检，Indexing API 已移除）
-* webauto_day —— 网页自动化每个站点每天点了几次"请求编入索引"
+* site_urls   —— 站点链接清单。扫描发现的**全部** URL 都在这里，
+                 不管有没有被收录。两个维度严格分开、互不影响：
+                   index_state  = Google 说这条收录了没（indexed/not_indexed/unknown）
+                   requested_at = 我们有没有通过本工具申请过
+                 「已收录」只看 index_state，跟有没有申请过完全无关——
+                 一条从没申请过的页面完全可能本来就是收录的。
+* urls        —— 更早期的 URL 历史表，保留用于统计
+* quota       —— 按天计的 API 配额（收录查询）
+* webauto_day —— 每个站点每天点了几次"请求编入索引"
 * log         —— 操作流水，source 区分是旧的 Indexing API 还是网页自动化
 """
 
@@ -44,16 +47,20 @@ CREATE TABLE IF NOT EXISTS log (
     status  INTEGER,
     message TEXT
 );
-CREATE TABLE IF NOT EXISTS pending (
-    url          TEXT PRIMARY KEY,
-    site         TEXT NOT NULL,
-    coverage     TEXT,
-    verdict      TEXT,
-    found_at     TEXT NOT NULL,
-    requested_at TEXT,
+CREATE TABLE IF NOT EXISTS site_urls (
+    url           TEXT PRIMARY KEY,
+    site          TEXT NOT NULL,
+    -- Google 的收录判定。这是"已收录"唯一的依据，跟有没有通过本工具
+    -- 申请过毫无关系。取值：indexed / not_indexed / unknown
+    index_state   TEXT NOT NULL DEFAULT 'unknown',
+    coverage      TEXT,          -- Google 给的原文描述
+    verdict       TEXT,          -- PASS / NEUTRAL / FAIL
+    last_checked  TEXT,          -- 上次查询收录状态的时间
+    first_seen    TEXT NOT NULL,
+    -- 下面是"我们做过什么"，跟收录状态是两码事
+    requested_at  TEXT,
     request_count INTEGER NOT NULL DEFAULT 0,
-    last_result  TEXT,
-    done_at      TEXT
+    last_result   TEXT
 );
 CREATE TABLE IF NOT EXISTS webauto_day (
     site TEXT NOT NULL,
@@ -63,7 +70,7 @@ CREATE TABLE IF NOT EXISTS webauto_day (
 );
 CREATE INDEX IF NOT EXISTS idx_log_ts ON log(ts);
 CREATE INDEX IF NOT EXISTS idx_urls_submitted ON urls(last_submitted);
-CREATE INDEX IF NOT EXISTS idx_pending_site ON pending(site, done_at);
+CREATE INDEX IF NOT EXISTS idx_site_urls_site ON site_urls(site, index_state);
 """
 
 
@@ -88,18 +95,42 @@ class Store:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """轻量迁移：老库缺的列补上，不动已有数据。
-
-        source 列用来区分历史记录的来源：老的 Indexing API 时代的记录没有这个值，
-        统一回填成 indexing_api；之后网页自动化产生的记录标 webauto。
-        这样历史统计里能把两种方式的实际效果分开看。
-        """
+        """轻量迁移：老库缺的列补上、老表数据搬过来，不丢数据。"""
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(log)")}
         if "source" not in cols:
+            # 老的 Indexing API 时代的记录没有来源标记，统一回填，
+            # 这样历史统计里能把两种提交方式的实际效果分开看
             self.conn.execute("ALTER TABLE log ADD COLUMN source TEXT")
             self.conn.execute(
                 "UPDATE log SET source = 'indexing_api' WHERE source IS NULL"
             )
+
+        # 从旧的 pending 表迁到 site_urls。
+        # 旧模型把"Google 的收录状态"和"这条待办办完了"混用同一个 done_at 字段，
+        # 语义上讲不清"已收录"到底是本来就收录、还是申请之后才收录的。
+        # 新模型用独立的 index_state 表达 Google 的判定，跟申请记录彻底解耦。
+        tables = {
+            r["name"]
+            for r in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "pending" in tables:
+            moved = self.conn.execute(
+                """INSERT OR IGNORE INTO site_urls
+                     (url, site, index_state, coverage, verdict,
+                      last_checked, first_seen, requested_at, request_count, last_result)
+                   SELECT url, site,
+                          CASE WHEN done_at IS NOT NULL THEN 'indexed'
+                               ELSE 'not_indexed' END,
+                          coverage, verdict,
+                          COALESCE(done_at, found_at), found_at,
+                          requested_at, request_count, last_result
+                   FROM pending"""
+            ).rowcount
+            self.conn.execute("DROP TABLE pending")
+            if moved:
+                print(f"[迁移] 已把 {moved} 条记录从 pending 迁入 site_urls")
 
     # ---------- URL ----------
 
@@ -212,48 +243,48 @@ class Store:
             )
             self.conn.commit()
 
-    # ---------- 待办池（未收录清单，跨天持久化） ----------
+    # ---------- 站点链接清单 ----------
 
-    def pending_upsert(self, site: str, url: str, coverage: str, verdict: str) -> None:
-        """把一条未收录 URL 放进待办池；已存在的只刷新收录状态，保留提交历史。"""
+    INDEXED = "indexed"
+    NOT_INDEXED = "not_indexed"
+    UNKNOWN = "unknown"
+
+    def url_upsert(
+        self,
+        site: str,
+        url: str,
+        index_state: str,
+        coverage: str = "",
+        verdict: str = "",
+    ) -> None:
+        """记录/更新一条链接的收录状态。
+
+        只动收录相关的字段，申请记录（requested_at / request_count）保持不变——
+        这两个维度是独立的，重新查一次收录状态不该影响申请历史。
+        """
+        now = _now()
         with self._lock:
             self.conn.execute(
-                """INSERT INTO pending (url, site, coverage, verdict, found_at)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO site_urls
+                     (url, site, index_state, coverage, verdict, last_checked, first_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(url) DO UPDATE SET
-                     coverage = excluded.coverage,
-                     verdict  = excluded.verdict,
-                     site     = excluded.site""",
-                (url, site, coverage, verdict, _now()),
+                     site         = excluded.site,
+                     index_state  = excluded.index_state,
+                     coverage     = excluded.coverage,
+                     verdict      = excluded.verdict,
+                     last_checked = excluded.last_checked""",
+                (url, site, index_state, coverage, verdict, now, now),
             )
             self.conn.commit()
 
-    def pending_resolve(self, url: str) -> None:
-        """这条 URL 已经确认收录了，标记完成（不再出现在待办里，但记录保留）。"""
-        with self._lock:
-            self.conn.execute(
-                "UPDATE pending SET done_at = ? WHERE url = ? AND done_at IS NULL",
-                (_now(), url),
-            )
-            self.conn.commit()
-
-    def pending_reopen(self, url: str) -> None:
-        """重新打开：之前判定已收录、现在又查出没收录了。
-
-        Google 的收录状态是会变的（页面被移出索引、规范网址改变等），
-        所以不能假设"标记完成"就是终态——每次扫描都要按最新结果校正。
+    def url_mark_requested(self, url: str, result: str) -> None:
+        """记录一次"通过本工具申请收录"。不碰 index_state——
+        申请了不等于就收录了，得等下次复查 Google 才知道。
         """
         with self._lock:
             self.conn.execute(
-                "UPDATE pending SET done_at = NULL WHERE url = ? AND done_at IS NOT NULL",
-                (url,),
-            )
-            self.conn.commit()
-
-    def pending_mark_requested(self, url: str, result: str) -> None:
-        with self._lock:
-            self.conn.execute(
-                """UPDATE pending
+                """UPDATE site_urls
                    SET requested_at = ?, request_count = request_count + 1,
                        last_result = ?
                    WHERE url = ?""",
@@ -261,42 +292,86 @@ class Store:
             )
             self.conn.commit()
 
-    def pending_list(self, site: str = "", include_done: bool = False) -> list[dict]:
+    def url_row_state(self, url: str) -> str:
+        """取一条链接当前记录的收录状态，没有记录返回 unknown。
+
+        复查时用来判断"这次是不是新确认收录的"。
+        """
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT index_state FROM site_urls WHERE url = ?", (url,)
+            ).fetchone()
+        return row["index_state"] if row else self.UNKNOWN
+
+    def url_list(
+        self, site: str = "", index_state: str = "", requested: str = ""
+    ) -> list[dict]:
+        """查链接清单。
+
+        index_state 传 indexed / not_indexed / unknown 做筛选，空表示全部。
+        requested 传 'yes' / 'no' 按有没有申请过筛选，空表示不限。
+        """
         where, params = [], []
         if site:
             where.append("site = ?")
             params.append(site)
-        if not include_done:
-            where.append("done_at IS NULL")
-        sql = "SELECT * FROM pending"
+        if index_state:
+            where.append("index_state = ?")
+            params.append(index_state)
+        if requested == "yes":
+            where.append("requested_at IS NOT NULL")
+        elif requested == "no":
+            where.append("requested_at IS NULL")
+        sql = "SELECT * FROM site_urls"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        # 排序意图：还没收录的排在前面（这些才需要处理），其中从没申请过的最优先，
-        # 因为名额有限、优先花在这些上；已收录的沉到最后，只作为参考。
-        sql += " ORDER BY (done_at IS NOT NULL), (requested_at IS NOT NULL), found_at"
+        # 排序意图：需要处理的排前面——未收录且从没申请过的最优先，
+        # 然后是未收录但申请过的，未查明的次之，已收录的沉到最后只作参考。
+        sql += """ ORDER BY
+                     CASE index_state
+                       WHEN 'not_indexed' THEN 0
+                       WHEN 'unknown' THEN 1
+                       ELSE 2 END,
+                     (requested_at IS NOT NULL),
+                     first_seen"""
         with self._lock:
             return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
-    def pending_counts(self) -> list[dict]:
-        """按站点汇总，给界面做概览。
-
-        total 是这个站点扫到过的全部 URL；pending 才是还没收录、需要处理的。
-        indexed 单独给出来，让用户能看到"已经收录了多少"这个正向进展。
-        """
+    def url_counts(self) -> list[dict]:
+        """按站点汇总，给界面做概览。"""
         with self._lock:
             rows = self.conn.execute(
                 """SELECT site,
                           COUNT(*) AS total,
-                          SUM(CASE WHEN done_at IS NOT NULL THEN 1 ELSE 0 END) AS indexed,
-                          SUM(CASE WHEN done_at IS NULL THEN 1 ELSE 0 END) AS pending,
-                          SUM(CASE WHEN done_at IS NULL AND requested_at IS NULL
-                                   THEN 1 ELSE 0 END) AS never,
-                          SUM(CASE WHEN done_at IS NULL AND requested_at IS NOT NULL
-                                   THEN 1 ELSE 0 END) AS waiting
-                   FROM pending
+                          SUM(index_state = 'indexed')     AS indexed,
+                          SUM(index_state = 'not_indexed') AS not_indexed,
+                          SUM(index_state = 'unknown')     AS unknown,
+                          SUM(index_state <> 'indexed' AND requested_at IS NULL)
+                            AS never_requested,
+                          SUM(index_state <> 'indexed' AND requested_at IS NOT NULL)
+                            AS requested
+                   FROM site_urls
                    GROUP BY site ORDER BY site"""
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def urls_to_recheck(self, site: str = "") -> list[str]:
+        """需要复查的链接：申请过、但目前还没确认收录的。
+
+        这是"复查我提交的链接收录了没"这个功能的取数逻辑。
+        """
+        where = ["requested_at IS NOT NULL", "index_state <> 'indexed'"]
+        params: list = []
+        if site:
+            where.append("site = ?")
+            params.append(site)
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT url FROM site_urls WHERE " + " AND ".join(where)
+                + " ORDER BY requested_at",
+                params,
+            ).fetchall()
+        return [r["url"] for r in rows]
 
     # ---------- 网页自动化的每日点击计数 ----------
 
@@ -356,11 +431,11 @@ class Store:
             ).fetchall()
         with self._lock:
             pending_open = self.conn.execute(
-                "SELECT COUNT(*) c FROM pending WHERE done_at IS NULL"
+                "SELECT COUNT(*) c FROM site_urls WHERE index_state = 'not_indexed'"
             ).fetchone()["c"]
             pending_never = self.conn.execute(
-                "SELECT COUNT(*) c FROM pending "
-                "WHERE done_at IS NULL AND requested_at IS NULL"
+                "SELECT COUNT(*) c FROM site_urls "
+                "WHERE index_state = 'not_indexed' AND requested_at IS NULL"
             ).fetchone()["c"]
         return {
             "total": total,

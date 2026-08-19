@@ -514,28 +514,29 @@ class Engine:
             account_name=account_name, emit=emit,
         )
 
-        # 全部入库，用 done_at 区分已收录与否——这样界面上"全部/已收录/未收录"
-        # 三种视图都有数据可看，而不是只留下未收录的那部分。
+        # 站点地图里的每一条都入库，包括查不出状态的——"全部"栏必须真的是
+        # 这个站点的全部链接，不然用户没法拿它当清单用。
+        # index_state 表达 Google 的判定，跟有没有通过本工具申请过完全无关。
         added = resolved = unknown = 0
         for row in res["rows"]:
-            if row["state"] == STATE_UNKNOWN:
-                unknown += 1  # 预检没查成，状态不明，不入库免得给出误导性的结论
-                continue
-            # 先写入/更新收录状态，已收录的再标记完成
-            self.store.pending_upsert(
-                site_url, row["url"], row["coverage"], row["verdict"]
-            )
             if row["state"] == STATE_INDEXED:
-                self.store.pending_resolve(row["url"])
+                state = self.store.INDEXED
                 resolved += 1
             elif row["state"] == STATE_PENDING:
-                # 之前被判定已收录、现在又查出没收录的，要把完成标记撤掉重新进待办
-                self.store.pending_reopen(row["url"])
+                state = self.store.NOT_INDEXED
                 added += 1
+            else:
+                # 预检失败或没查（配额不足等），状态不明确——如实标 unknown，
+                # 不猜成"未收录"，否则会误导用户去申请本来可能已经收录的页面
+                state = self.store.UNKNOWN
+                unknown += 1
+            self.store.url_upsert(
+                site_url, row["url"], state, row["coverage"], row["verdict"]
+            )
 
-        msg = f"扫描完成：未收录 {added} 条待处理，已收录 {resolved} 条"
+        msg = f"扫描完成：共 {len(res['rows'])} 条 —— 已收录 {resolved} 条、未收录 {added} 条"
         if unknown:
-            msg += f"，{unknown} 条预检失败未记录"
+            msg += f"、状态未查明 {unknown} 条"
         emit({"type": "log", "level": "success", "message": msg})
         return {
             "found": len(onsite), "pending": added,
@@ -590,7 +591,7 @@ class Engine:
                 "webauto", url, "webauto",
                 200 if res.ok else 0, res.message, source="webauto",
             )
-            self.store.pending_mark_requested(url, res.status)
+            self.store.url_mark_requested(url, res.status)
             stats["done"] += 1
 
             if res.status == "challenge":
@@ -635,6 +636,70 @@ class Engine:
             "results": [{"url": u, "status": r.status, "message": r.message}
                         for u, r in results],
             "used_today": self.store.webauto_used(site_url), "limit": limit,
+        }
+
+    # ------------------------------------------------------------------
+    # 复查收录状态
+    # ------------------------------------------------------------------
+
+    def recheck(
+        self,
+        site_url: str,
+        urls: list[str] | None = None,
+        *,
+        account_name: str = "",
+        emit: Emit = _noop,
+    ) -> dict:
+        """重新查询这些链接现在到底收录了没，更新清单里的状态。
+
+        典型用法：申请收录过几天之后回来复查，看 Google 到底收了没有。
+        不传 urls 时默认复查"申请过、但目前还没确认收录"的那些。
+
+        这个动作只花查询配额（2000 次/天/凭据，充裕），
+        **不消耗申请名额**，所以想查多少次都行。
+        """
+        if urls is None:
+            urls = self.store.urls_to_recheck(site_url)
+            if not urls:
+                emit({"type": "log", "level": "info",
+                      "message": "没有需要复查的链接（申请过且还没确认收录的都查完了）"})
+                return {"checked": 0, "newly_indexed": 0, "still_not": 0, "unknown": 0}
+            emit({"type": "log", "level": "info",
+                  "message": f"复查 {len(urls)} 条申请过但还没确认收录的链接"})
+        else:
+            emit({"type": "log", "level": "info", "message": f"复查指定的 {len(urls)} 条链接"})
+
+        res = self.analyze(
+            urls, site_url, do_inspect=True, force=True,
+            account_name=account_name, emit=emit,
+        )
+
+        newly_indexed = still_not = unknown = 0
+        for row in res["rows"]:
+            before = self.store.url_row_state(row["url"])
+            if row["state"] == STATE_INDEXED:
+                state = self.store.INDEXED
+                if before != self.store.INDEXED:
+                    newly_indexed += 1
+                    emit({"type": "log", "level": "success",
+                          "message": "已收录：" + row["url"]})
+            elif row["state"] == STATE_PENDING:
+                state = self.store.NOT_INDEXED
+                still_not += 1
+            else:
+                state = self.store.UNKNOWN
+                unknown += 1
+            self.store.url_upsert(
+                site_url, row["url"], state, row["coverage"], row["verdict"]
+            )
+
+        emit({"type": "log", "level": "success",
+              "message": f"复查完成：新确认收录 {newly_indexed} 条，"
+                         f"仍未收录 {still_not} 条"
+                         + (f"，未查明 {unknown} 条" if unknown else "")})
+        return {
+            "checked": len(res["rows"]), "newly_indexed": newly_indexed,
+            "still_not": still_not, "unknown": unknown,
         }
 
     # ------------------------------------------------------------------

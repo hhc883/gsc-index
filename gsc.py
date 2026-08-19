@@ -4,8 +4,11 @@
 
   python gsc.py check                                     验证凭据与配额
   python gsc.py scan  --sitemap https://a.com/sitemap.xml  全站扫描，未收录的进待办池
-  python gsc.py pending                                    看待办池
-  python gsc.py request --limit 2                           从待办池取几条去网页申请收录
+  python gsc.py links                                      看链接清单（默认只看未收录）
+  python gsc.py links --state all                           看全部链接
+  python gsc.py links --state indexed                       只看已收录的
+  python gsc.py request --limit 2                           挑几条未收录的去网页申请
+  python gsc.py recheck                                     复查申请过的现在收录了没
   python gsc.py inspect --file urls.txt                     只查收录状态
   python gsc.py sitemap --submit https://a.com/sitemap.xml  提交站点地图
   python gsc.py stats                                       看统计
@@ -108,35 +111,48 @@ def _guess_sitemap(site_url: str) -> str:
     return (site_url if site_url.endswith("/") else site_url + "/") + "sitemap.xml"
 
 
-def cmd_pending(args) -> None:
+STATE_MARK = {"indexed": "已收录", "not_indexed": "未收录", "unknown": "未查明"}
+
+
+def cmd_links(args) -> None:
+    """站点链接清单。默认只列未收录的，--state 可切换。"""
     cfg, store, engine = build(args)
-    # 默认只列还没收录的（这才是需要处理的）；--include-done 才把已收录的也列出来
-    rows = store.pending_list(
-        cfg.site_url if not args.all else "", include_done=args.include_done
+    rows = store.url_list(
+        "" if args.all else cfg.site_url,
+        index_state="" if args.state == "all" else args.state,
     )
-    counts = store.pending_counts()
+    counts = store.url_counts()
     print("\n各站点概览：")
     for c in counts:
         print(
             f"  {c['site']}"
-            f"  扫到 {c['total']} · 已收录 {c['indexed']} · 未收录 {c['pending']}"
-            f"（从未申请 {c['never']} · 已申请 {c['waiting']}）"
+            f"  共 {c['total']} · 已收录 {c['indexed']} · 未收录 {c['not_indexed']}"
+            + (f" · 未查明 {c['unknown']}" if c["unknown"] else "")
+            + f"（未收录中：从未申请 {c['never_requested']} · 已申请 {c['requested']}）"
         )
     if not counts:
         print("  （空）先跑一次 scan")
+
     scope = "全部站点" if args.all else "当前站点"
-    kind = "全部" if args.include_done else "未收录"
+    kind = {"all": "全部", "indexed": "已收录", "not_indexed": "未收录",
+            "unknown": "未查明"}[args.state]
     print(f"\n{scope}{kind}明细（前 {args.limit} 条）：")
     for r in rows[: args.limit]:
-        if r["done_at"]:
-            mark = "已收录"
-        elif r["requested_at"]:
-            mark = f"已申请{r['request_count']}次"
-        else:
-            mark = "未申请"
-        print(f"  [{mark:>9}] {r['coverage'] or '?':<16} {r['url']}")
+        mark = STATE_MARK.get(r["index_state"], r["index_state"])
+        req = f"已申请{r['request_count']}次" if r["requested_at"] else "未申请"
+        print(f"  [{mark:>6}|{req:>9}] {r['coverage'] or '?':<16} {r['url']}")
     if len(rows) > args.limit:
         print(f"  …… 其余 {len(rows) - args.limit} 条")
+
+
+def cmd_recheck(args) -> None:
+    """复查收录状态：看之前申请的链接现在收录了没。"""
+    cfg, _, engine = build(args)
+    if not cfg.site_url:
+        sys.exit("请用 --site 指定站点")
+    res = engine.recheck(cfg.site_url, emit=emit)
+    print(f"\n复查 {res['checked']} 条：新确认收录 {res['newly_indexed']} 条，"
+          f"仍未收录 {res['still_not']} 条")
 
 
 def cmd_request(args) -> None:
@@ -147,13 +163,14 @@ def cmd_request(args) -> None:
     if not webauto.has_session(cfg.webauto_session_path):
         sys.exit("还没有浏览器登录。请先运行网页界面，在「账号管理」完成一次浏览器登录。")
 
-    rows = store.pending_list(cfg.site_url)
-    # 优先挑从没交过的
+    # 只从"未收录"里挑——已收录的没必要再申请，白费稀缺名额
+    rows = store.url_list(cfg.site_url, index_state=store.NOT_INDEXED)
+    # 优先挑从没申请过的
     targets = [r["url"] for r in rows if not r["requested_at"]][: args.limit]
     if not targets:
         targets = [r["url"] for r in rows][: args.limit]
     if not targets:
-        sys.exit("待办池是空的，先跑一次 scan")
+        sys.exit("没有未收录的链接可申请，先跑一次 scan")
 
     w = engine.webauto_overview(cfg.site_url)
     print(f"\n{cfg.site_url} 今日已用 {w['used']}/{w['limit']}，准备提交 {len(targets)} 条：")
@@ -226,11 +243,16 @@ def main() -> None:
     sc.add_argument("--limit", type=int, help="本次最多处理多少条 URL")
     sc.set_defaults(fn=cmd_scan)
 
-    pd = sub.add_parser("pending", help="查看扫描结果清单")
-    pd.add_argument("--all", action="store_true", help="显示全部站点，而非仅当前站点")
-    pd.add_argument("--include-done", action="store_true", help="连已收录的一起列出")
-    pd.add_argument("--limit", type=int, default=30, help="明细显示条数")
-    pd.set_defaults(fn=cmd_pending)
+    ln = sub.add_parser("links", help="查看站点链接清单及收录状态")
+    ln.add_argument("--all", action="store_true", help="显示全部站点，而非仅当前站点")
+    ln.add_argument("--state", default="not_indexed",
+                    choices=["all", "indexed", "not_indexed", "unknown"],
+                    help="按收录状态筛选，默认只看未收录的")
+    ln.add_argument("--limit", type=int, default=30, help="明细显示条数")
+    ln.set_defaults(fn=cmd_links)
+
+    rc = sub.add_parser("recheck", help="复查之前申请的链接现在收录了没")
+    rc.set_defaults(fn=cmd_recheck)
 
     rq = sub.add_parser("request", help="从待办池取几条，去 GSC 网页申请收录")
     rq.add_argument("--limit", type=int, default=1, help="本次提交几条（名额稀缺，默认 1）")
