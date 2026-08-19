@@ -269,7 +269,7 @@ ol.steps b{color:var(--text)}
 
   <div class="card">
     <h2>第二步：挑几条去申请收录</h2>
-    <p class="sub" id="scanPendSub">当前站点的未收录清单。名额稀缺，建议优先挑重要的页面。</p>
+    <p class="sub" id="scanPendSub">默认只显示未收录的。已收录的可以切到「已收录」查看，但不能勾选。</p>
     <div class="chips" id="pendChips"></div>
     <div class="row" style="margin-bottom:11px">
       <button class="btn sm" id="selTop">按剩余名额自动勾选</button>
@@ -282,7 +282,7 @@ ol.steps b{color:var(--text)}
       <thead><tr>
         <th class="c"><input type="checkbox" id="thAll"></th>
         <th>URL</th><th style="width:150px">Google 收录情况</th>
-        <th style="width:120px">申请状态</th><th style="width:110px">上次申请</th>
+        <th style="width:120px">状态</th><th style="width:110px">上次申请</th>
       </tr></thead>
       <tbody id="pendBody"><tr><td colspan="5"><div class="empty">先扫描一次，或到「未收录清单」看其他站点</div></td></tr></tbody>
     </table></div></div>
@@ -300,14 +300,15 @@ ol.steps b{color:var(--text)}
     </p>
     <div class="row" style="margin-bottom:12px">
       <button class="btn sm" id="btnReloadPend">刷新</button>
-      <label class="chk"><input type="checkbox" id="pendIncludeDone">显示已完成的</label>
+      <label class="chk"><input type="checkbox" id="pendIncludeDone" checked>包含已收录的</label>
     </div>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
-        <th>站点</th><th style="width:100px">待办总数</th>
-        <th style="width:110px">从未申请</th><th style="width:130px">已申请待观察</th><th style="width:90px"></th>
+        <th>站点</th><th style="width:90px">扫到</th><th style="width:90px">已收录</th>
+        <th style="width:90px">未收录</th><th style="width:100px">从未申请</th>
+        <th style="width:110px">已申请</th><th style="width:90px"></th>
       </tr></thead>
-      <tbody id="pendSiteBody"><tr><td colspan="5"><div class="empty">还没有待办，先去扫描</div></td></tr></tbody>
+      <tbody id="pendSiteBody"><tr><td colspan="7"><div class="empty">还没有记录，先去扫描</div></td></tr></tbody>
     </table></div></div>
   </div>
 
@@ -831,13 +832,18 @@ $('#btnSubmitSitemap').onclick = async () => {
 };
 
 /* ---------------- 待办池（当前站点，用于挑选提交） ---------------- */
-const PEND_CHIPS = [['all','全部'],['never','从未申请'],['waiting','已申请待观察']];
-let pendFilter = 'all';
+/* 分类：done=已被 Google 收录；never/waiting 都属于未收录，按有没有申请过再分 */
+const PEND_CHIPS = [
+  ['all','全部'], ['open','未收录'], ['never','未收录·从未申请'],
+  ['waiting','未收录·已申请'], ['done','已收录'],
+];
+let pendFilter = 'open';   // 默认只看未收录的，这才是需要处理的部分
 
 async function loadPending(){
   if(!site()) return;
   try{
-    const r = await api('/api/pending?site_url=' + encodeURIComponent(site()));
+    // include_done=true 才会把已收录的也返回，"全部/已收录"两个视图需要它
+    const r = await api('/api/pending?include_done=true&site_url=' + encodeURIComponent(site()));
     S.pend = r.rows.map(x => ({...x, selected:false}));
     S.webauto = r.webauto;
     renderQuota();
@@ -846,13 +852,21 @@ async function loadPending(){
   }catch(e){ toast('读取待办失败：' + e.message, 'err'); }
 }
 
-function pendState(r){ return r.requested_at ? 'waiting' : 'never'; }
+/* 单条的精确状态：已收录 / 未收录且从未申请 / 未收录但申请过 */
+function pendState(r){
+  if(r.done_at) return 'done';
+  return r.requested_at ? 'waiting' : 'never';
+}
+/* 已收录的不需要再申请，不允许勾选 */
+function pendSelectable(r){ return !r.done_at; }
 
 function renderPendChips(){
   const counts = {
     all: S.pend.length,
+    open: S.pend.filter(r => pendState(r) !== 'done').length,
     never: S.pend.filter(r => pendState(r) === 'never').length,
     waiting: S.pend.filter(r => pendState(r) === 'waiting').length,
+    done: S.pend.filter(r => pendState(r) === 'done').length,
   };
   $('#pendChips').innerHTML = PEND_CHIPS
     .map(([k,label]) => `<button class="chip${k===pendFilter?' on':''}" data-f="${k}">${label} <b>${counts[k]}</b></button>`)
@@ -862,25 +876,33 @@ function renderPendChips(){
     renderPendChips(); renderPend();
   });
   const w = S.webauto || {};
+  const open = counts.open, done = counts.done;
   $('#scanPendSub').textContent =
-    `当前站点待办 ${S.pend.length} 条。今日本地还剩 ${w.left ?? '?'} 次申请名额`
-    + `（Google 真实上限未公开，可能提前撞上限流）。`;
+    `当前站点扫到 ${S.pend.length} 条：已收录 ${done} 条、未收录 ${open} 条。`
+    + `今日本地还剩 ${w.left ?? '?'} 次申请名额（Google 真实上限未公开，可能提前撞上限流）。`;
 }
 
 function visiblePend(){
-  return pendFilter === 'all' ? S.pend : S.pend.filter(r => pendState(r) === pendFilter);
+  if(pendFilter === 'all') return S.pend;
+  if(pendFilter === 'open') return S.pend.filter(r => pendState(r) !== 'done');
+  return S.pend.filter(r => pendState(r) === pendFilter);
 }
 
 function renderPend(){
   const rows = visiblePend(), CAP = 300, shown = rows.slice(0, CAP);
+  const LABEL = { done:'已收录', never:'从未申请', waiting:'已申请' };
   $('#pendBody').innerHTML = shown.length ? shown.map(r => {
     const i = S.pend.indexOf(r);
     const st = pendState(r);
-    return `<tr>
-      <td class="c"><input type="checkbox" data-i="${i}"${r.selected?' checked':''}></td>
+    const sel = pendSelectable(r);
+    const label = st === 'waiting' ? '已申请 ' + r.request_count + ' 次' : LABEL[st];
+    return `<tr${sel ? '' : ' style="opacity:.62"'}>
+      <td class="c">${sel
+        ? `<input type="checkbox" data-i="${i}"${r.selected?' checked':''}>`
+        : '<span class="hint" title="已被 Google 收录，无需再申请">—</span>'}</td>
       <td class="u">${esc(r.url)}</td>
       <td>${esc(r.coverage || '—')}</td>
-      <td><span class="pill p-${st}">${st === 'never' ? '从未申请' : '已申请 ' + r.request_count + ' 次'}</span>
+      <td><span class="pill p-${st === 'done' ? 'ok' : st}">${label}</span>
         ${r.last_result && r.last_result !== 'success' ? '<div class="note">' + esc(r.last_result) + '</div>' : ''}</td>
       <td class="num">${r.requested_at ? esc(localDate(r.requested_at)) : '—'}</td>
     </tr>`;
@@ -895,7 +917,7 @@ function renderPend(){
   updateReqCount();
 }
 
-const selectedPend = () => S.pend.filter(r => r.selected);
+const selectedPend = () => S.pend.filter(r => r.selected && pendSelectable(r));
 function updateReqCount(){
   const n = selectedPend().length;
   const left = (S.webauto && S.webauto.left) ?? 0;
@@ -909,7 +931,7 @@ $('#selTop').onclick = () => {
   const left = (S.webauto && S.webauto.left) ?? 0;
   S.pend.forEach(r => r.selected = false);
   // 优先挑从没申请过的，名额有限就交这些最值
-  const vis = visiblePend();
+  const vis = visiblePend().filter(pendSelectable);
   const cands = vis.filter(r => pendState(r) === 'never')
     .concat(vis.filter(r => pendState(r) === 'waiting'));
   cands.slice(0, left).forEach(r => r.selected = true);
@@ -917,7 +939,10 @@ $('#selTop').onclick = () => {
   if(!left) toast('今日本地名额已用完', 'err');
 };
 $('#selNone').onclick = () => { S.pend.forEach(r => r.selected = false); renderPend(); };
-$('#thAll').onchange = e => { visiblePend().forEach(r => r.selected = e.target.checked); renderPend(); };
+$('#thAll').onchange = e => {
+  visiblePend().filter(pendSelectable).forEach(r => r.selected = e.target.checked);
+  renderPend();
+};
 
 $('#btnRequest').onclick = async () => {
   const urls = selectedPend().map(r => r.url);
@@ -962,14 +987,16 @@ $('#expCsv').onclick = () => {
 async function loadAllPending(){
   try{
     const inc = $('#pendIncludeDone').checked ? 'true' : 'false';
-    const r = await api('/api/pending?site_url=&include_done=' + inc);
+    const r = await api('/api/pending?all_sites=true&include_done=' + inc);
     $('#pendSiteBody').innerHTML = r.counts.length ? r.counts.map(c => `<tr>
       <td class="u">${esc(c.site)}</td>
       <td class="num">${c.total}</td>
+      <td class="num" style="color:var(--ok)">${c.indexed}</td>
+      <td class="num"><b>${c.pending}</b></td>
       <td class="num">${c.never}</td>
       <td class="num">${c.waiting}</td>
       <td><button class="btn sm" data-go="${esc(c.site)}">去处理</button></td>
-    </tr>`).join('') : '<tr><td colspan="5"><div class="empty">还没有待办，先去扫描</div></td></tr>';
+    </tr>`).join('') : '<tr><td colspan="7"><div class="empty">还没有记录，先去扫描</div></td></tr>';
     $$('#pendSiteBody [data-go]').forEach(b => b.onclick = () => {
       ensureSiteOption(b.dataset.go);
       $('#site').dispatchEvent(new Event('change'));
@@ -979,9 +1006,11 @@ async function loadAllPending(){
     S.allPend = r.rows;
     const CAP = 500, shown = S.allPend.slice(0, CAP);
     $('#allPendSub').textContent = '共 ' + S.allPend.length + ' 条';
+    const LABEL2 = { done:'已收录', never:'从未申请', waiting:'已申请' };
     $('#allPendBody').innerHTML = shown.length ? shown.map(r2 => {
-      const st = r2.done_at ? 'ok' : pendState(r2);
-      const label = r2.done_at ? '已收录' : (st === 'never' ? '从未申请' : '已申请 ' + r2.request_count + ' 次');
+      const stRaw = pendState(r2);
+      const st = stRaw === 'done' ? 'ok' : stRaw;
+      const label = stRaw === 'waiting' ? '已申请 ' + r2.request_count + ' 次' : LABEL2[stRaw];
       return `<tr>
         <td class="u">${esc(r2.site)}</td>
         <td class="u">${esc(r2.url)}</td>

@@ -110,17 +110,31 @@ def _guess_sitemap(site_url: str) -> str:
 
 def cmd_pending(args) -> None:
     cfg, store, engine = build(args)
-    rows = store.pending_list(cfg.site_url if not args.all else "")
+    # 默认只列还没收录的（这才是需要处理的）；--include-done 才把已收录的也列出来
+    rows = store.pending_list(
+        cfg.site_url if not args.all else "", include_done=args.include_done
+    )
     counts = store.pending_counts()
-    print("\n各站点待办概览：")
+    print("\n各站点概览：")
     for c in counts:
-        print(f"  {c['site']}  待办 {c['total']}（从未提交 {c['never']} · 已交待观察 {c['waiting']}）")
+        print(
+            f"  {c['site']}"
+            f"  扫到 {c['total']} · 已收录 {c['indexed']} · 未收录 {c['pending']}"
+            f"（从未申请 {c['never']} · 已申请 {c['waiting']}）"
+        )
     if not counts:
         print("  （空）先跑一次 scan")
-    print(f"\n{'当前站点' if not args.all else '全部'}待办明细（前 {args.limit} 条）：")
+    scope = "全部站点" if args.all else "当前站点"
+    kind = "全部" if args.include_done else "未收录"
+    print(f"\n{scope}{kind}明细（前 {args.limit} 条）：")
     for r in rows[: args.limit]:
-        mark = "未交" if not r["requested_at"] else f"已交{r['request_count']}次"
-        print(f"  [{mark}] {r['coverage'] or '?'}  {r['url']}")
+        if r["done_at"]:
+            mark = "已收录"
+        elif r["requested_at"]:
+            mark = f"已申请{r['request_count']}次"
+        else:
+            mark = "未申请"
+        print(f"  [{mark:>9}] {r['coverage'] or '?':<16} {r['url']}")
     if len(rows) > args.limit:
         print(f"  …… 其余 {len(rows) - args.limit} 条")
 
@@ -212,8 +226,9 @@ def main() -> None:
     sc.add_argument("--limit", type=int, help="本次最多处理多少条 URL")
     sc.set_defaults(fn=cmd_scan)
 
-    pd = sub.add_parser("pending", help="查看未收录待办池")
+    pd = sub.add_parser("pending", help="查看扫描结果清单")
     pd.add_argument("--all", action="store_true", help="显示全部站点，而非仅当前站点")
+    pd.add_argument("--include-done", action="store_true", help="连已收录的一起列出")
     pd.add_argument("--limit", type=int, default=30, help="明细显示条数")
     pd.set_defaults(fn=cmd_pending)
 

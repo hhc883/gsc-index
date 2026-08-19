@@ -484,13 +484,18 @@ def api_scan(body: dict = Body(...)):
 
 
 @app.get("/api/pending")
-def api_pending(site_url: str = "", include_done: bool = False):
-    """待办池：未收录且还没交上去的 URL 清单，跨天保留。"""
-    site = site_url or cfg.site_url
+def api_pending(site_url: str = "", include_done: bool = False, all_sites: bool = False):
+    """扫描结果清单，跨天保留。
+
+    include_done=True 会把已收录的也返回（界面上"全部/已收录"两个视图要用）。
+    all_sites=True 时返回全部站点——注意不能用"site_url 为空就回退到 cfg.site_url"，
+    那样"全站点明细"永远只能拿到当前站点的数据。
+    """
+    site = "" if all_sites else (site_url or cfg.site_url)
     return {
         "rows": store.pending_list(site, include_done=include_done),
         "counts": store.pending_counts(),
-        "webauto": engine.webauto_overview(site),
+        "webauto": engine.webauto_overview(site or cfg.site_url),
     }
 
 

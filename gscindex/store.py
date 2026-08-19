@@ -229,11 +229,24 @@ class Store:
             self.conn.commit()
 
     def pending_resolve(self, url: str) -> None:
-        """这条 URL 已经确认收录了，标记完成并移出待办。"""
+        """这条 URL 已经确认收录了，标记完成（不再出现在待办里，但记录保留）。"""
         with self._lock:
             self.conn.execute(
                 "UPDATE pending SET done_at = ? WHERE url = ? AND done_at IS NULL",
                 (_now(), url),
+            )
+            self.conn.commit()
+
+    def pending_reopen(self, url: str) -> None:
+        """重新打开：之前判定已收录、现在又查出没收录了。
+
+        Google 的收录状态是会变的（页面被移出索引、规范网址改变等），
+        所以不能假设"标记完成"就是终态——每次扫描都要按最新结果校正。
+        """
+        with self._lock:
+            self.conn.execute(
+                "UPDATE pending SET done_at = NULL WHERE url = ? AND done_at IS NOT NULL",
+                (url,),
             )
             self.conn.commit()
 
@@ -258,20 +271,29 @@ class Store:
         sql = "SELECT * FROM pending"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        # 从没交过的排最前面——名额有限，优先花在这些上
-        sql += " ORDER BY (requested_at IS NOT NULL), found_at"
+        # 排序意图：还没收录的排在前面（这些才需要处理），其中从没申请过的最优先，
+        # 因为名额有限、优先花在这些上；已收录的沉到最后，只作为参考。
+        sql += " ORDER BY (done_at IS NOT NULL), (requested_at IS NOT NULL), found_at"
         with self._lock:
             return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
     def pending_counts(self) -> list[dict]:
-        """按站点汇总待办情况，给界面做概览。"""
+        """按站点汇总，给界面做概览。
+
+        total 是这个站点扫到过的全部 URL；pending 才是还没收录、需要处理的。
+        indexed 单独给出来，让用户能看到"已经收录了多少"这个正向进展。
+        """
         with self._lock:
             rows = self.conn.execute(
                 """SELECT site,
                           COUNT(*) AS total,
-                          SUM(CASE WHEN requested_at IS NULL THEN 1 ELSE 0 END) AS never,
-                          SUM(CASE WHEN requested_at IS NOT NULL THEN 1 ELSE 0 END) AS waiting
-                   FROM pending WHERE done_at IS NULL
+                          SUM(CASE WHEN done_at IS NOT NULL THEN 1 ELSE 0 END) AS indexed,
+                          SUM(CASE WHEN done_at IS NULL THEN 1 ELSE 0 END) AS pending,
+                          SUM(CASE WHEN done_at IS NULL AND requested_at IS NULL
+                                   THEN 1 ELSE 0 END) AS never,
+                          SUM(CASE WHEN done_at IS NULL AND requested_at IS NOT NULL
+                                   THEN 1 ELSE 0 END) AS waiting
+                   FROM pending
                    GROUP BY site ORDER BY site"""
             ).fetchall()
         return [dict(r) for r in rows]

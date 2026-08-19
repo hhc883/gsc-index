@@ -272,6 +272,187 @@ def bootstrap_login(session_path: Path, *, timeout_seconds: int = 900) -> tuple[
         return False, f"等待 {timeout_seconds // 60} 分钟仍未检测到登录完成，请重试"
 
 
+def _do_one(page, site_url: str, url: str, *, nav_timeout_ms: int = 30000) -> RequestResult:
+    """在一个已经打开的页面上，对单个 URL 走完一次"请求编入索引"。
+
+    抽出来是为了批量处理时能复用同一个浏览器：启动 Chrome 加载 GSC 大约要十几秒，
+    每条 URL 都重开一次的话这部分开销会被重复 N 遍。这个函数假定调用方已经
+    准备好了 page，只负责"输入网址 -> 点按钮 -> 等结果"这段。
+    """
+    from urllib.parse import quote
+
+    # GSC 的网址检查结果页地址里的 id 参数是 Google 生成的不透明哈希，不是网址本身，
+    # 没法直接拼 URL 跳转到检查结果——必须回到属性概览页，在顶部搜索框输入网址回车，
+    # 这是唯一能真正走到检查结果的路径（已用真实登录态验证过）。
+    overview_url = f"{OVERVIEW_URL}?resource_id={quote(site_url, safe='')}"
+
+    # 批量处理时每条都要回到概览页重新搜索，否则搜索框里还是上一条的结果
+    page.goto(overview_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+    page.wait_for_timeout(2500)
+
+    challenge = _find_challenge(page)
+    if challenge:
+        return RequestResult(False, "challenge", challenge)
+
+    try:
+        box = page.locator("input[type=text]").first
+        box.wait_for(state="visible", timeout=10000)
+    except PWTimeout:
+        return RequestResult(
+            False, "error",
+            "没找到顶部的网址检查搜索框，可能是这个站点属性打不开、"
+            "或者 Google 改了页面结构。当前页面标题：" + (page.title() or "(无)"),
+        )
+    box.click()
+    page.wait_for_timeout(300)
+    box.fill(url)
+    page.wait_for_timeout(300)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(4000)
+
+    challenge = _find_challenge(page)
+    if challenge:
+        return RequestResult(False, "challenge", challenge)
+
+    btn = page.get_by_role("button", name=re.compile(_pattern_or(REQUEST_BUTTON_PATTERNS), re.I))
+    try:
+        btn.first.wait_for(state="visible", timeout=10000)
+    except PWTimeout:
+        return RequestResult(
+            False, "error",
+            "没找到「请求编入索引」按钮，可能是这个网址检查结果本身有问题"
+            "（比如不属于这个站点属性），或者 Google 改了页面结构。"
+            "当前页面标题：" + (page.title() or "(无)"),
+        )
+    btn.first.click()
+
+    # 点击后会先后经过两段处理文案（"正在测试实际网址可否编入索引"
+    # -> "正在提交请求"），中间偶尔还有一小段两者都不匹配的空档期，
+    # 所以不能"文案不再是处理中就当作有结果"——必须一直等到真正出现
+    # 已知的最终结果文案（成功/配额超限）才停，否则会在空档期误判成
+    # "无法识别"。官方提示这一步可能要 1~2 分钟。
+    deadline = time.time() + 150
+    body_text = ""
+    while time.time() < deadline:
+        time.sleep(2)
+        challenge = _find_challenge(page)
+        if challenge:
+            return RequestResult(False, "challenge", challenge)
+        try:
+            body_text = page.locator("body").inner_text(timeout=3000)
+        except Exception:
+            continue
+
+        if any(re.search(pat, body_text, re.I) for pat in RESULT_QUOTA_PATTERNS):
+            return RequestResult(False, "quota_exceeded", "今日配额已用尽（Google 侧）")
+        if any(re.search(pat, body_text, re.I) for pat in RESULT_SUCCESS_PATTERNS):
+            return RequestResult(True, "success", "已请求编入索引")
+        if any(re.search(pat, body_text, re.I) for pat in RESULT_ALREADY_PATTERNS):
+            return RequestResult(True, "already_done", "最近已经申请过，本次视为已处理")
+        # 既不是已知的最终结果，也判断不出是不是还在处理中过渡态——
+        # 不管是不是，只要还没超时就继续等，避免在两段处理文案之间的
+        # 空档期被误判成"无法识别"。
+
+    return RequestResult(
+        False, "error",
+        "等了 150 秒也没等到已知的结果文案，无法确认是否成功。"
+        "把这条反馈回去，我需要根据实际弹出的文字调整识别规则。当前页面片段："
+        + body_text[-200:],
+    )
+
+
+def request_indexing_batch(
+    session_path: Path,
+    site_url: str,
+    urls: list[str],
+    *,
+    headless: bool = False,
+    nav_timeout_ms: int = 30000,
+    on_result=None,
+    should_stop=None,
+    take_quota=None,
+    delay=None,
+) -> list[tuple[str, RequestResult]]:
+    """一个浏览器会话跑完整批 URL，避免每条都重启浏览器。
+
+    启动 Chrome 并加载 GSC 大约要十几秒，逐条重开的话这部分开销会被重复 N 遍。
+    这里只启动一次、只清理一次残留进程，然后循环处理。
+
+    几个回调让调用方能在不侵入浏览器逻辑的前提下控制流程：
+      on_result(url, result) —— 每条出结果就回调，界面可以实时更新
+      should_stop()          —— 返回 True 就停止（用户点了停止按钮）
+      take_quota(url)        —— 返回 False 表示名额不够，跳过剩下的
+      delay()                —— 两条之间的随机间隔
+
+    遇到验证码或 Google 侧配额用尽会立即中断整批——继续点下去没有意义，
+    而且在已经被限流的情况下继续操作只会让情况更糟。
+    """
+    if not has_session(session_path):
+        return [(u, RequestResult(False, "no_session", "还没有登录会话，请先完成一次登录")) for u in urls]
+
+    found = find_browser()
+    if not found:
+        return [(u, RequestResult(False, "error", "没找到本机安装的 Chrome 或 Edge")) for u in urls]
+    exe_path, _channel = found
+
+    prof = profile_dir(session_path)
+    kill_stale_browsers(prof)
+
+    out: list[tuple[str, RequestResult]] = []
+    with sync_playwright() as p:
+        try:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(prof),
+                executable_path=exe_path,
+                headless=headless,
+                args=STEALTH_ARGS,
+                ignore_default_args=IGNORE_DEFAULT_ARGS,
+                viewport=None,
+            )
+        except Exception as exc:
+            res = RequestResult(False, "error", "启动浏览器失败：" + str(exc)[:200])
+            return [(u, res) for u in urls]
+
+        page = context.pages[0] if context.pages else context.new_page()
+        try:
+            for i, url in enumerate(urls):
+                if should_stop and should_stop():
+                    break
+                if take_quota and not take_quota(url):
+                    break
+
+                try:
+                    res = _do_one(page, site_url, url, nav_timeout_ms=nav_timeout_ms)
+                except PWTimeout as exc:
+                    res = RequestResult(False, "error", "页面加载超时：" + str(exc)[:160])
+                except Exception as exc:
+                    # Chrome 中途自我重启会让 page 引用失效，抛的是"页面已关闭"。
+                    # 这一条没法判断成败，如实报错并中断整批——page 已经废了，
+                    # 后面的循环也做不了什么。
+                    res = RequestResult(False, "error", "浏览器连接意外中断：" + str(exc)[:160])
+                    out.append((url, res))
+                    if on_result:
+                        on_result(url, res)
+                    break
+
+                out.append((url, res))
+                if on_result:
+                    on_result(url, res)
+
+                # 验证码和 Google 侧配额用尽都必须立刻停整批
+                if res.status in ("challenge", "quota_exceeded"):
+                    break
+                if i < len(urls) - 1 and delay and not (should_stop and should_stop()):
+                    delay()
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
+            kill_stale_browsers(prof)  # 不清的话残留进程会越积越多，下次启动必然失败
+    return out
+
+
 def request_indexing(
     session_path: Path,
     site_url: str,
@@ -280,136 +461,11 @@ def request_indexing(
     headless: bool = False,
     nav_timeout_ms: int = 30000,
 ) -> RequestResult:
-    """对一个 URL 点一次"申请编入索引"。单次调用只处理一个 URL，
-    多个 URL 的节流、配额判断由调用方（server.py 的批处理逻辑）负责。
-    """
-    if not has_session(session_path):
-        return RequestResult(False, "no_session", "还没有登录会话，请先完成一次登录")
-
-    found = find_browser()
-    if not found:
-        return RequestResult(False, "error", "没找到本机安装的 Chrome 或 Edge")
-    exe_path, _channel = found
-
-    from urllib.parse import quote
-
-    # GSC 的网址检查结果页地址里的 id 参数是 Google 生成的不透明哈希，不是网址本身，
-    # 没法直接拼 URL 跳转到检查结果——必须打开属性概览页，在顶部搜索框输入网址回车，
-    # 这是唯一能真正走到检查结果的路径（已用真实登录态验证过）。
-    overview_url = f"{OVERVIEW_URL}?resource_id={quote(site_url, safe='')}"
-
-    prof = profile_dir(session_path)
-    kill_stale_browsers(prof)
-
-    with sync_playwright() as p:
-        # 复用登录时那个持久化配置目录，登录状态自然带着
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(prof),
-            executable_path=exe_path,
-            headless=headless,
-            args=STEALTH_ARGS,
-            ignore_default_args=IGNORE_DEFAULT_ARGS,
-            viewport=None,
-        )
-        page = context.pages[0] if context.pages else context.new_page()
-        try:
-            page.goto(overview_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
-            page.wait_for_timeout(2500)
-
-            challenge = _find_challenge(page)
-            if challenge:
-                return RequestResult(False, "challenge", challenge)
-
-            try:
-                box = page.locator("input[type=text]").first
-                box.wait_for(state="visible", timeout=10000)
-            except PWTimeout:
-                return RequestResult(
-                    False, "error",
-                    "没找到顶部的网址检查搜索框，可能是这个站点属性打不开、"
-                    "或者 Google 改了页面结构。当前页面标题：" + (page.title() or "(无)"),
-                )
-            box.click()
-            page.wait_for_timeout(300)
-            box.fill(url)
-            page.wait_for_timeout(300)
-            page.keyboard.press("Enter")
-            page.wait_for_timeout(4000)
-
-            challenge = _find_challenge(page)
-            if challenge:
-                return RequestResult(False, "challenge", challenge)
-
-            btn = page.get_by_role("button", name=re.compile(_pattern_or(REQUEST_BUTTON_PATTERNS), re.I))
-            try:
-                btn.first.wait_for(state="visible", timeout=10000)
-            except PWTimeout:
-                return RequestResult(
-                    False, "error",
-                    "没找到「请求编入索引」按钮，可能是这个网址检查结果本身有问题"
-                    "（比如不属于这个站点属性），或者 Google 改了页面结构。"
-                    "当前页面标题：" + (page.title() or "(无)"),
-                )
-            btn.first.click()
-
-            # 点击后会先后经过两段处理文案（"正在测试实际网址可否编入索引"
-            # -> "正在提交请求"），中间偶尔还有一小段两者都不匹配的空档期，
-            # 所以不能"文案不再是处理中就当作有结果"——必须一直等到真正出现
-            # 已知的最终结果文案（成功/配额超限）才停，否则会在空档期误判成
-            # "无法识别"。官方提示这一步可能要 1~2 分钟。
-            deadline = time.time() + 150
-            body_text = ""
-            final: RequestResult | None = None
-            while time.time() < deadline:
-                time.sleep(2)
-                challenge = _find_challenge(page)
-                if challenge:
-                    return RequestResult(False, "challenge", challenge)
-                try:
-                    body_text = page.locator("body").inner_text(timeout=3000)
-                except Exception:
-                    continue
-
-                if any(re.search(p, body_text, re.I) for p in RESULT_QUOTA_PATTERNS):
-                    final = RequestResult(False, "quota_exceeded", "今日配额已用尽（Google 侧）")
-                    break
-                if any(re.search(p, body_text, re.I) for p in RESULT_SUCCESS_PATTERNS):
-                    final = RequestResult(True, "success", "已请求编入索引")
-                    break
-                if any(re.search(p, body_text, re.I) for p in RESULT_ALREADY_PATTERNS):
-                    final = RequestResult(True, "already_done", "最近已经申请过，本次视为已处理")
-                    break
-                # 既不是已知的最终结果，也判断不出是不是还在处理中过渡态——
-                # 不管是不是，只要还没超时就继续等，避免在两段处理文案之间的
-                # 空档期被误判成"无法识别"。
-
-            if final:
-                return final
-            return RequestResult(
-                False, "error",
-                "等了 150 秒也没等到已知的结果文案，无法确认是否成功。"
-                "把这条反馈回去，我需要根据实际弹出的文字调整识别规则。当前页面片段："
-                + body_text[-200:],
-            )
-        except PWTimeout as exc:
-            return RequestResult(False, "error", "页面加载超时：" + str(exc))
-        except Exception as exc:
-            # 跟登录那边同一个根因：Chrome 过程中自我重启一次进程，Playwright
-            # 手里的 page/context 引用失效，抛的是"页面已关闭"而不是超时。
-            # 这里没有 has_session 那种能直接判断成败的磁盘依据（提交这一步
-            # 不像登录会往 Cookie 库写入清晰的信号），所以如实报错、不猜成功，
-            # 让上层按失败处理、配额也不会被这次白扣。
-            return RequestResult(False, "error", "浏览器连接意外中断：" + str(exc)[:200])
-        finally:
-            try:
-                context.close()
-            except Exception:
-                pass
-            kill_stale_browsers(prof)  # 不清的话残留进程会越积越多，下次启动必然失败
-
-
-def _pattern_or(patterns: list[str]) -> str:
-    return "|".join(patterns)
+    """单条便捷入口（CLI 和只交一条时用），内部走批量实现。"""
+    res = request_indexing_batch(
+        session_path, site_url, [url], headless=headless, nav_timeout_ms=nav_timeout_ms
+    )
+    return res[0][1] if res else RequestResult(False, "error", "没有返回结果")
 
 
 def random_delay(min_s: int, max_s: int) -> None:

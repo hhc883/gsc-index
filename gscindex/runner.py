@@ -514,23 +514,28 @@ class Engine:
             account_name=account_name, emit=emit,
         )
 
-        # 未收录的进待办池；已确认收录的从待办池里划掉
+        # 全部入库，用 done_at 区分已收录与否——这样界面上"全部/已收录/未收录"
+        # 三种视图都有数据可看，而不是只留下未收录的那部分。
         added = resolved = unknown = 0
         for row in res["rows"]:
+            if row["state"] == STATE_UNKNOWN:
+                unknown += 1  # 预检没查成，状态不明，不入库免得给出误导性的结论
+                continue
+            # 先写入/更新收录状态，已收录的再标记完成
+            self.store.pending_upsert(
+                site_url, row["url"], row["coverage"], row["verdict"]
+            )
             if row["state"] == STATE_INDEXED:
                 self.store.pending_resolve(row["url"])
                 resolved += 1
-            elif row["state"] == STATE_UNKNOWN:
-                unknown += 1  # 预检没查成，状态不明，先不入池免得误导
             elif row["state"] == STATE_PENDING:
-                self.store.pending_upsert(
-                    site_url, row["url"], row["coverage"], row["verdict"]
-                )
+                # 之前被判定已收录、现在又查出没收录的，要把完成标记撤掉重新进待办
+                self.store.pending_reopen(row["url"])
                 added += 1
 
-        msg = f"扫描完成：未收录 {added} 条已进待办池，已收录 {resolved} 条"
+        msg = f"扫描完成：未收录 {added} 条待处理，已收录 {resolved} 条"
         if unknown:
-            msg += f"，{unknown} 条预检失败未入池"
+            msg += f"，{unknown} 条预检失败未记录"
         emit({"type": "log", "level": "success", "message": msg})
         return {
             "found": len(onsite), "pending": added,
@@ -545,11 +550,13 @@ class Engine:
     def webauto_submit(
         self, site_url: str, urls: list[str], *, emit: Emit = _noop, should_stop=None
     ) -> dict:
-        """逐个 URL 去 GSC 网页点“请求编入索引”。
+        """逐个 URL 去 GSC 网页点"请求编入索引"。
 
-        跟 API 提交不同，这条路一次只能处理一个 URL、每次都要开浏览器，
-        而且 Google 那边的每日上限不明（撞到“超出了配额”就是到顶了）。
-        所以这里是串行 + 随机间隔，不做并发。
+        整批复用同一个浏览器会话——启动 Chrome 并加载 GSC 大约要十几秒，
+        以前每条都重开一次，这部分开销被重复 N 遍。现在只启动一次。
+
+        仍然是串行 + 随机间隔，不做并发：Google 那边的每日上限不明
+        （撞到"超出了配额"就是到顶了），并发只会更快撞墙、更像机器人。
         """
         if not webauto.has_session(self.cfg.webauto_session_path):
             emit({"type": "log", "level": "error",
@@ -558,31 +565,22 @@ class Engine:
 
         limit = self.cfg.webauto_daily_limit
         used = self.store.webauto_used(site_url)
-        emit({"type": "log", "level": "info",
-              "message": f"开始处理 {len(urls)} 条。{site_url} 今日已用 {used}/{limit} 次"})
-
-        ok = failed = skipped = 0
-        results: list[dict] = []
         total = len(urls)
+        emit({"type": "log", "level": "info",
+              "message": f"开始处理 {total} 条。{site_url} 今日已用 {used}/{limit} 次。"
+                         f"整批共用一个浏览器窗口，不再逐条重启"})
         emit({"type": "progress", "phase": "webauto", "done": 0, "total": total})
 
-        for i, url in enumerate(urls):
-            if should_stop and should_stop():
-                emit({"type": "log", "level": "warn", "message": "已手动停止"})
-                break
+        stats = {"ok": 0, "failed": 0, "done": 0, "quota_stop": False}
 
-            if not self.store.webauto_take(site_url, limit):
-                results.append({"url": url, "status": "local_limit",
-                                "message": f"本地每日上限 {limit} 已用完"})
-                emit({"type": "log", "level": "warn",
-                      "message": f"本地每日上限已用完，剩下 {total - i} 条留到明天"})
-                skipped += total - i
-                break
+        def take_quota(url: str) -> bool:
+            if self.store.webauto_take(site_url, limit):
+                return True
+            emit({"type": "log", "level": "warn",
+                  "message": f"本地每日上限 {limit} 已用完，剩余的留到明天"})
+            return False
 
-            res = webauto.request_indexing(
-                self.cfg.webauto_session_path, site_url, url,
-                headless=self.cfg.webauto_headless,
-            )
+        def on_result(url: str, res) -> None:
             # 只有真的递交出去才占名额；其余情况一律退还，
             # 否则一次网络抖动就白吃掉一个本来就稀缺的名额
             if not res.ok:
@@ -593,38 +591,51 @@ class Engine:
                 200 if res.ok else 0, res.message, source="webauto",
             )
             self.store.pending_mark_requested(url, res.status)
-            results.append({"url": url, "status": res.status, "message": res.message})
+            stats["done"] += 1
 
             if res.status == "challenge":
                 emit({"type": "log", "level": "error",
                       "message": "触发 Google 安全验证，已停止整批：" + res.message})
                 emit({"type": "log", "level": "error",
                       "message": "请重新走一遍浏览器登录（可能要手动过一次验证）再继续。"})
-                skipped += total - i - 1
-                break
-            if res.status == "quota_exceeded":
+            elif res.status == "quota_exceeded":
+                stats["quota_stop"] = True
                 emit({"type": "log", "level": "warn",
                       "message": f"Google 侧已达上限，停止本批：{res.message}"})
-                skipped += total - i - 1
-                break
-            if res.ok:
-                ok += 1
+            elif res.ok:
+                stats["ok"] += 1
                 emit({"type": "log", "level": "success", "message": f"{url} → {res.message}"})
             else:
-                failed += 1
+                stats["failed"] += 1
                 emit({"type": "log", "level": "error",
                       "message": f"{url} 失败（未占用名额）：{res.message}"})
 
-            emit({"type": "progress", "phase": "webauto", "done": i + 1, "total": total})
-            if i < total - 1 and not (should_stop and should_stop()):
-                webauto.random_delay(
-                    self.cfg.webauto_min_delay, self.cfg.webauto_max_delay
-                )
+            emit({"type": "progress", "phase": "webauto",
+                  "done": stats["done"], "total": total})
 
-        emit({"type": "log", "level": "success" if ok else "warn",
-              "message": f"结束：成功 {ok} 条，失败 {failed} 条，跳过 {skipped} 条"})
-        return {"ok": ok, "failed": failed, "skipped": skipped, "results": results,
-                "used_today": self.store.webauto_used(site_url), "limit": limit}
+        results = webauto.request_indexing_batch(
+            self.cfg.webauto_session_path, site_url, urls,
+            headless=self.cfg.webauto_headless,
+            on_result=on_result,
+            should_stop=should_stop,
+            take_quota=take_quota,
+            delay=lambda: webauto.random_delay(
+                self.cfg.webauto_min_delay, self.cfg.webauto_max_delay
+            ),
+        )
+
+        skipped = total - stats["done"]
+        if skipped > 0 and not stats["quota_stop"]:
+            emit({"type": "log", "level": "warn", "message": f"{skipped} 条未处理"})
+        emit({"type": "log", "level": "success" if stats["ok"] else "warn",
+              "message": f"结束：成功 {stats['ok']} 条，失败 {stats['failed']} 条，"
+                         f"未处理 {skipped} 条"})
+        return {
+            "ok": stats["ok"], "failed": stats["failed"], "skipped": skipped,
+            "results": [{"url": u, "status": r.status, "message": r.message}
+                        for u, r in results],
+            "used_today": self.store.webauto_used(site_url), "limit": limit,
+        }
 
     # ------------------------------------------------------------------
     # 站点地图
