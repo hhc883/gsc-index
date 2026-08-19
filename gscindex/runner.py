@@ -172,16 +172,25 @@ class Engine:
         return rows
 
     def eligible_accounts(
-        self, site_url: str, require_owner: bool
+        self, site_url: str, require_owner: bool, account_name: str = ""
     ) -> tuple[list, list[tuple[str, str, str]]]:
         """只返回真正对 site_url 有权限的凭据，避免把配额浪费在必然失败的账号上。
 
         提交索引要求 siteOwner；收录预检 siteOwner 或 siteFullUser 均可（require_owner=False）。
+        传 account_name 时只核实这一个凭据（用户在界面上手动指定了要用哪个账号的配额），
+        不再让引擎自动跨全部凭据挑选——指定的账号如果没权限就直接报错，不会静默换用别的账号。
         返回 (合格凭据列表, 不合格凭据的诊断信息 [(名称, 邮箱, 原因), ...])，
         诊断信息用于在“一个合格账号都没有”时给出可操作的错误提示。
         """
-        if not site_url or not self.pool.accounts:
-            return list(self.pool.accounts), []
+        candidates = self.pool.accounts
+        if account_name:
+            acc = self.pool.by_name(account_name)
+            if not acc:
+                return [], [(account_name, "", "找不到这个账号，可能已被删除，请刷新账号列表")]
+            candidates = [acc]
+
+        if not site_url or not candidates:
+            return list(candidates), []
 
         def check(acc):
             try:
@@ -200,17 +209,26 @@ class Engine:
                 return acc, True, ""
             return acc, False, "权限级别是「" + PERMISSION_CN.get(perm, perm or "未知") + "」，不够"
 
-        with ThreadPoolExecutor(max_workers=min(8, len(self.pool.accounts))) as ex:
-            results = list(ex.map(check, self.pool.accounts))
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as ex:
+            results = list(ex.map(check, candidates))
 
         eligible = [acc for acc, ok, _ in results if ok]
         diagnostics = [(acc.name, acc.email, msg) for acc, ok, msg in results if not ok]
         return eligible, diagnostics
 
-    def all_sites(self) -> list[dict]:
-        """汇总全部账号可见的 GSC 属性，供界面下拉框使用。"""
+    def all_sites(self, account_name: str = "") -> list[dict]:
+        """汇总账号可见的 GSC 属性，供界面下拉框使用。
+
+        传 account_name 时只看这一个账号能访问哪些属性，不再跨账号合并——
+        用来实现"选定某个账号后，站点下拉框只显示这个账号名下的站点"。
+        """
+        accounts = self.pool.accounts
+        if account_name:
+            acc = self.pool.by_name(account_name)
+            accounts = [acc] if acc else []
+
         merged: dict[str, dict] = {}
-        for acc in self.pool.accounts:
+        for acc in accounts:
             try:
                 token = acc.token()
             except AuthError:
@@ -244,6 +262,7 @@ class Engine:
         *,
         do_inspect: bool = True,
         force: bool = False,
+        account_name: str = "",
         emit: Emit = _noop,
     ) -> dict:
         """去重 → 站点归属过滤 → 重复提交过滤 → 收录预检，返回逐条结果。"""
@@ -301,7 +320,7 @@ class Engine:
 
         # 收录预检
         if do_inspect and candidates:
-            self._inspect_many(candidates, site_url, rows, emit)
+            self._inspect_many(candidates, site_url, rows, emit, account_name=account_name)
         elif candidates:
             # 跳过预检时仍归类为待提交，只在文案上标明没查过
             for u in candidates:
@@ -328,18 +347,24 @@ class Engine:
         return {"summary": summary, "rows": ordered, "site_url": site_url}
 
     def _inspect_many(
-        self, urls: list[str], site_url: str, rows: dict[str, dict], emit: Emit
+        self,
+        urls: list[str],
+        site_url: str,
+        rows: dict[str, dict],
+        emit: Emit,
+        account_name: str = "",
     ) -> None:
-        eligible, diag = self.eligible_accounts(site_url, require_owner=False)
+        eligible, diag = self.eligible_accounts(site_url, require_owner=False, account_name=account_name)
         if not eligible:
             detail = "；".join(
                 name + "（" + (email or "无邮箱") + "）：" + msg for name, email, msg in diag
             )
+            scope = ("指定账号「" + account_name + "」") if account_name else "任何凭据"
             emit(
                 {
                     "type": "log",
                     "level": "error",
-                    "message": "没有任何凭据对「" + site_url + "」拥有权限，跳过预检。" + detail,
+                    "message": "没有" + scope + "对「" + site_url + "」拥有权限，跳过预检。" + detail,
                 }
             )
             for u in urls:
@@ -439,6 +464,7 @@ class Engine:
         site_url: str,
         *,
         notif_type: str = "URL_UPDATED",
+        account_name: str = "",
         emit: Emit = _noop,
     ) -> dict:
         urls = sources.dedupe([u for u in (sources.normalize(u) for u in urls) if u])
@@ -453,16 +479,17 @@ class Engine:
             emit({"type": "log", "level": "error", "message": "accounts/ 里没有可用的服务账号密钥"})
             return {"ok": 0, "failed": 0, "skipped": len(urls), "results": [], "error": "无可用账号"}
 
-        eligible, diag = self.eligible_accounts(site_url, require_owner=True)
+        eligible, diag = self.eligible_accounts(site_url, require_owner=True, account_name=account_name)
         if not eligible:
             detail = "；".join(
                 name + "（" + (email or "无邮箱") + "）：" + msg for name, email, msg in diag
             )
+            scope = ("指定账号「" + account_name + "」") if account_name else "任何凭据"
             emit(
                 {
                     "type": "log",
                     "level": "error",
-                    "message": "没有任何凭据对「" + site_url + "」拥有所有者权限，无法提交。" + detail,
+                    "message": "没有" + scope + "对「" + site_url + "」拥有所有者权限，无法提交。" + detail,
                 }
             )
             return {

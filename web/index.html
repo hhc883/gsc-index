@@ -37,7 +37,8 @@ header{background:var(--panel);border-bottom:1px solid var(--border);position:st
 .logo{font-weight:650;font-size:15px;letter-spacing:.2px;display:flex;align-items:center;gap:8px;white-space:nowrap}
 .logo .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
 .spacer{flex:1}
-.sitepick{display:flex;align-items:center;gap:8px}
+.sitepick{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.pickrow{display:flex;align-items:center;gap:8px}
 .sitepick label{color:var(--muted);font-size:12.5px;white-space:nowrap}
 
 /* ---------- 配额条 ---------- */
@@ -153,14 +154,16 @@ td.c input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;marg
 .form .lbl{color:var(--muted);font-size:13px}
 .form .lbl b{display:block;color:var(--text);font-weight:550;font-size:13.5px;margin-bottom:1px}
 
-.sitesel{min-width:250px;max-width:100%}
+.sitesel{min-width:220px;max-width:100%}
+.acctsel{min-width:200px;max-width:100%}
 
 /* ---------- 窄屏 ---------- */
 @media (max-width:680px){
   .wrap,.hbar,.quota,.tabs{padding-left:14px;padding-right:14px}
   .hbar{gap:10px}
-  .sitepick{width:100%;flex-wrap:nowrap}
-  .sitesel{min-width:0;flex:1}
+  .sitepick{width:100%;flex-direction:column;align-items:stretch;gap:6px}
+  .pickrow{width:100%}
+  .sitesel,.acctsel{min-width:0;flex:1}
   .form{grid-template-columns:1fr;gap:3px 0}
   .form .lbl{margin-top:12px}
   .form input,.form select{width:100%}
@@ -193,15 +196,21 @@ ol.steps b{color:var(--text)}
     <div class="logo"><span class="dot"></span>GSC 索引提交器</div>
     <div class="spacer"></div>
     <div class="sitepick">
-      <label for="site">当前站点</label>
-      <select id="site" class="sitesel"><option value="">（尚未配置）</option></select>
-      <button class="btn sm" id="reloadSites">刷新</button>
+      <div class="pickrow">
+        <label for="acct">使用账号</label>
+        <select id="acct" class="acctsel"><option value="">自动（按站点权限分派）</option></select>
+      </div>
+      <div class="pickrow">
+        <label for="site">当前站点</label>
+        <select id="site" class="sitesel"><option value="">（尚未配置）</option></select>
+        <button class="btn sm" id="reloadSites">刷新</button>
+      </div>
     </div>
   </div>
   <div class="quota">
     <div class="qitem">
       <div class="qhead">
-        <span>今日提交配额 <span class="tip" title="配额按 GCP 项目计算，不按站点计算。你名下所有站点共用这个额度。要提量请新建 GCP 项目并添加对应的服务账号密钥。">共享</span></span>
+        <span>今日提交配额 <span class="tip" id="qsTag" title="配额按 GCP 项目计算，不按站点计算。你名下所有站点共用这个额度。要提量请新建 GCP 项目并添加对应的服务账号密钥。">共享</span></span>
         <span><b id="qsU">0</b> / <b id="qsL">0</b></span>
       </div>
       <div class="qbar"><div class="qfill" id="qsF"></div></div>
@@ -541,7 +550,7 @@ const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-const S = { cfg:{}, quota:null, sites:[], urls:[], rows:[], filter:'all', inspRows:[], logOffset:0 };
+const S = { cfg:{}, quota:null, sites:[], urls:[], rows:[], filter:'all', inspRows:[], logOffset:0, acctFilter:'' };
 
 async function api(path, opts){
   const r = await fetch(path, opts);
@@ -581,14 +590,33 @@ $$('.tab').forEach(t => t.onclick = () => {
 /* ---------------- 顶栏状态 ---------------- */
 function paintQuota(q){
   S.quota = q;
+  renderQuotaBars();
+  loadAccountPicker();
+}
+
+/* 顶部配额条：默认显示全部账号汇总；选中某个具体账号后只显示那一个账号自己的配额，
+   避免用户以为"这个账号还有 200 条"结果其实看到的是全体汇总。 */
+function renderQuotaBars(){
+  const q = S.quota;
+  if(!q) return;
   const set = (u, l, uid, lid, fid) => {
     $(uid).textContent = u; $(lid).textContent = l;
     const pct = l > 0 ? Math.min(100, u / l * 100) : 0;
     const f = $(fid); f.style.width = pct + '%';
     f.className = 'qfill' + (pct >= 100 ? ' full' : pct >= 80 ? ' hot' : '');
   };
-  set(q.submit_used, q.submit_limit, '#qsU', '#qsL', '#qsF');
-  set(q.inspect_used, q.inspect_limit, '#qiU', '#qiL', '#qiF');
+  const focus = S.acctFilter && q.accounts.find(a => a.name === S.acctFilter);
+  if(focus){
+    set(focus.submit_used, focus.submit_limit, '#qsU', '#qsL', '#qsF');
+    set(focus.inspect_used, focus.inspect_limit, '#qiU', '#qiL', '#qiF');
+    $('#qsTag').textContent = '该账号';
+    $('#qsTag').title = '当前只看「' + focus.name + '」这一个账号的配额，不是全部账号的汇总。切回"自动"可看汇总。';
+  } else {
+    set(q.submit_used, q.submit_limit, '#qsU', '#qsL', '#qsF');
+    set(q.inspect_used, q.inspect_limit, '#qiU', '#qiL', '#qiF');
+    $('#qsTag').textContent = '共享';
+    $('#qsTag').title = '配额按 GCP 项目计算，不按站点计算。你名下所有站点共用这个额度。要提量请新建 GCP 项目并添加对应的服务账号密钥。';
+  }
   $('#qsA').innerHTML = q.accounts.length
     ? q.accounts.map(a => {
         const left = a.submit_limit - a.submit_used;
@@ -597,6 +625,22 @@ function paintQuota(q){
     : '<span>尚未配置服务账号</span>';
   $('#noAcc').classList.toggle('hide', q.accounts.length > 0);
 }
+
+/* 账号选择器：数据直接复用配额概览里已经带着的 name/email/kind_cn，不用再单独打一次慢请求 */
+function loadAccountPicker(){
+  if(!S.quota) return;
+  const sel = $('#acct'), cur = sel.value;
+  sel.innerHTML = '<option value="">自动（按站点权限分派）</option>'
+    + S.quota.accounts.map(a =>
+        `<option value="${esc(a.name)}">${esc(a.email || a.name)}　·　${esc(a.kind_cn || '')}</option>`
+      ).join('');
+  if(S.quota.accounts.some(a => a.name === cur)) sel.value = cur;
+}
+$('#acct').onchange = () => {
+  S.acctFilter = $('#acct').value;
+  renderQuotaBars();
+  loadSites();
+};
 
 async function loadState(){
   try{
@@ -650,13 +694,16 @@ function autofillSitemapUrl(){
 async function loadSites(){
   $('#reloadSites').disabled = true;
   try{
-    const { sites } = await api('/api/sites');
+    const qs = S.acctFilter ? ('?account=' + encodeURIComponent(S.acctFilter)) : '';
+    const { sites } = await api('/api/sites' + qs);
     S.sites = sites;
     const sel = $('#site');
+    // 优先保留当前选择（如果切换账号后它仍然可见）；不然退到新列表的第一个站点。
     // 没配置过站点时，下拉框会按浏览器默认行为静默选中第一项——
     // 这里显式接管那次选择，让 checkSiteAccess / 自动填充站点地图等逻辑能感知到，
     // 不然会出现"界面显示了站点，但我们的状态还以为没选"的不一致
-    const cur = sel.value || S.cfg.site_url || (sites[0] && sites[0].site_url) || '';
+    const prev = sel.value || S.cfg.site_url || '';
+    const cur = sites.some(s => s.site_url === prev) ? prev : ((sites[0] && sites[0].site_url) || '');
     sel.innerHTML = sites.length ? '' : '<option value="">（账号无可见属性）</option>';
     sites.forEach(s => {
       const o = document.createElement('option');
@@ -822,7 +869,7 @@ $('#btnSubmitSitemap').onclick = async () => {
 
 /* ---------------- 分析 ---------------- */
 function payload(){
-  const b = { site_url: site(), inspect: $('#optInspect').checked, force: $('#optForce').checked };
+  const b = { site_url: site(), inspect: $('#optInspect').checked, force: $('#optForce').checked, account: S.acctFilter };
   if(S.urls.length) b.urls = S.urls; else b.text = $('#urlText').value;
   return b;
 }
@@ -941,7 +988,7 @@ $('#btnSubmitSel').onclick = () => {
 async function doSubmit(urls){
   try{
     const { job_id } = await api('/api/submit', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({urls, site_url: site(), delete: $('#optDelete').checked})});
+      body: JSON.stringify({urls, site_url: site(), delete: $('#optDelete').checked, account: S.acctFilter})});
     $('#jobTitle').textContent = '提交中';
     $('#jobCard').scrollIntoView({behavior:'smooth', block:'nearest'});
     watchJob(job_id, {card:'#jobCard', log:'#jobLog', fill:'#jobFill', phase:'#jobPhase', count:'#jobCount'}, j => {
@@ -1111,7 +1158,7 @@ $('#btnInspect').onclick = async () => {
   $('#inspResCard').classList.add('hide');
   try{
     const { job_id } = await api('/api/analyze', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({text, site_url: site(), inspect: true, force: true})});
+      body: JSON.stringify({text, site_url: site(), inspect: true, force: true, account: S.acctFilter})});
     watchJob(job_id, {card:'#inspJobCard', log:'#inspLog', fill:'#inspFill', phase:'#inspPhase', count:'#inspCount'}, j => {
       if(!j.result) return;
       S.inspRows = j.result.rows;

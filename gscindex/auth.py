@@ -187,42 +187,54 @@ class AccountPool:
         self.reload()
 
     def reload(self) -> None:
+        """重新扫描 accounts/ 目录。
+
+        先在局部变量里把整份新列表建好，最后才一次性替换 self.accounts / self.errors。
+        不能像之前那样先清空再逐个 append——那样任何并发读到 pool.accounts 的请求
+        （比如 /api/oauth/status、/api/sites）都可能撞上"刚清空还没建完"的中间状态，
+        看到的账号列表时多时少，账号越多、reload 耗时越长，这个窗口就越容易被撞上。
+        属性重新赋值本身是原子的，所以并发读拿到的要么是完整的旧列表，要么是完整的新列表。
+        """
         with self._lock:
-            self.accounts = []
-            self.errors = []
+            accounts: list[Credential] = []
+            errors: list[tuple[str, str]] = []
             self.directory.mkdir(parents=True, exist_ok=True)
             for path in sorted(self.directory.glob("*.json")):
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
                 except json.JSONDecodeError as exc:
-                    self.errors.append((path.name, "不是合法的 JSON: " + str(exc)))
+                    errors.append((path.name, "不是合法的 JSON: " + str(exc)))
                     continue
                 if not isinstance(data, dict):
-                    self.errors.append((path.name, "JSON 内容不是对象"))
+                    errors.append((path.name, "JSON 内容不是对象"))
                     continue
 
                 kind = data.get("type")
                 if kind == KIND_SERVICE:
-                    cred = self._load_service(path, data)
+                    cred = self._load_service(path, data, errors)
                 elif kind == KIND_OAUTH:
-                    cred = self._load_oauth(path, data)
+                    cred = self._load_oauth(path, data, errors)
                 elif data.get("installed") or data.get("web"):
-                    self.errors.append(
+                    errors.append(
                         (path.name, "这是 OAuth 客户端配置文件，不是凭据。"
                                     "请到「账号管理」页的 OAuth 区域上传它并完成授权。")
                     )
                     continue
                 else:
-                    self.errors.append(
+                    errors.append(
                         (path.name, "无法识别的凭据类型，既不是服务账号密钥也不是 OAuth 授权")
                     )
                     continue
                 if cred:
-                    self.accounts.append(cred)
+                    accounts.append(cred)
+            self.accounts = accounts
+            self.errors = errors
 
-    def _load_service(self, path: Path, data: dict) -> Credential | None:
+    def _load_service(
+        self, path: Path, data: dict, errors: list[tuple[str, str]]
+    ) -> Credential | None:
         if not data.get("client_email") or not data.get("private_key"):
-            self.errors.append((path.name, "密钥内容不完整，缺少 client_email 或 private_key"))
+            errors.append((path.name, "密钥内容不完整，缺少 client_email 或 private_key"))
             return None
         return ServiceAccountCredential(
             name=path.stem,
@@ -231,10 +243,12 @@ class AccountPool:
             path=path,
         )
 
-    def _load_oauth(self, path: Path, data: dict) -> Credential | None:
+    def _load_oauth(
+        self, path: Path, data: dict, errors: list[tuple[str, str]]
+    ) -> Credential | None:
         missing = [k for k in ("client_id", "client_secret", "refresh_token") if not data.get(k)]
         if missing:
-            self.errors.append(
+            errors.append(
                 (path.name, "OAuth 授权信息不完整，缺少 " + "、".join(missing) + "，请重新授权")
             )
             return None

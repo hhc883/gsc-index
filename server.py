@@ -263,8 +263,8 @@ def api_accounts_delete(name: str):
 
 
 @app.get("/api/sites")
-def api_sites():
-    return {"sites": engine.all_sites()}
+def api_sites(account: str = ""):
+    return {"sites": engine.all_sites(account_name=account)}
 
 
 # --------------------------------------------------------------------------
@@ -433,6 +433,7 @@ def api_analyze(body: dict = Body(...)):
     site = (body.get("site_url") or cfg.site_url).strip()
     do_inspect = bool(body.get("inspect", cfg.inspect_before_submit))
     force = bool(body.get("force", False))
+    account = (body.get("account") or "").strip()
 
     if text:
         parsed, bad = sources.parse_text(text)
@@ -443,7 +444,9 @@ def api_analyze(body: dict = Body(...)):
     def run(emit):
         if bad:
             emit({"type": "log", "level": "warn", "message": f"{bad} 行无法识别为 URL，已忽略"})
-        return engine.analyze(urls, site, do_inspect=do_inspect, force=force, emit=emit)
+        return engine.analyze(
+            urls, site, do_inspect=do_inspect, force=force, account_name=account, emit=emit
+        )
 
     return {"job_id": start_job("analyze", run).id}
 
@@ -453,9 +456,10 @@ def api_submit(body: dict = Body(...)):
     urls = body.get("urls") or []
     site = (body.get("site_url") or cfg.site_url).strip()
     notif = "URL_DELETED" if body.get("delete") else "URL_UPDATED"
+    account = (body.get("account") or "").strip()
 
     def run(emit):
-        return engine.submit(urls, site, notif_type=notif, emit=emit)
+        return engine.submit(urls, site, notif_type=notif, account_name=account, emit=emit)
 
     return {"job_id": start_job("submit", run).id}
 
