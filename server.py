@@ -532,6 +532,11 @@ def api_traffic(
     return {
         "rows": rows,
         "window_days": w,
+        # 每个窗口各有多少数据。流量按窗口分别缓存，在「近 7 天」拉的数据切到
+        # 「近 28 天」是看不到的；把这份汇总交给界面，才能把"数据在另一个窗口"
+        # 和"真的没数据"区分开，不然空表看起来就像功能坏了。
+        "windows": store.traffic_windows(),
+        "metric": metric,
         "analytics": engine.analytics_ready(),
         "ga_mapped": len(cfg.ga_property_map or {}),
     }

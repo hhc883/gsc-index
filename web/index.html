@@ -105,6 +105,12 @@ label.chk input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{position:sticky;top:0;background:var(--panel2);text-align:left;padding:9px 11px;font-weight:600;
   font-size:12px;color:var(--muted);border-bottom:1px solid var(--border);z-index:1;white-space:nowrap}
+/* 可排序表头。箭头用 ::after 画，不进 HTML，免得把 th 的文字挤换行 */
+th[data-sort]{cursor:pointer;user-select:none}
+th[data-sort]:hover{color:var(--fg)}
+th[data-sort]::after{content:attr(data-arrow);font-size:9px;margin-left:3px;opacity:.85}
+th.sorted{color:var(--fg)}
+.wnow{color:var(--fg)}
 td{padding:8px 11px;border-bottom:1px solid var(--border2);vertical-align:top}
 tbody tr:last-child td{border-bottom:0}
 tbody tr:hover{background:var(--panel2)}
@@ -493,13 +499,19 @@ ol.steps b{color:var(--text)}
     </div>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
-        <th>站点</th>
-        <th style="width:95px">GSC 展现</th><th style="width:90px">GSC 点击</th>
-        <th style="width:85px">点击率</th><th style="width:95px">平均排名</th>
-        <th style="width:90px">GA 会话</th><th style="width:90px">GA 用户</th>
-        <th style="width:105px">更新时间</th><th style="width:80px"></th>
+        <th data-sort="site">站点</th>
+        <th data-sort="impressions" style="width:92px">GSC 展现</th>
+        <th data-sort="clicks" style="width:88px">GSC 点击</th>
+        <th data-sort="ctr" style="width:82px">点击率</th>
+        <th data-sort="position" style="width:92px">平均排名</th>
+        <th data-sort="sessions" style="width:88px">GA 会话</th>
+        <th data-sort="users" style="width:88px">GA 用户</th>
+        <th data-sort="views" style="width:92px">GA 浏览量</th>
+        <th data-sort="bounce_rate" style="width:88px">跳出率</th>
+        <th data-sort="updated_at" style="width:100px">更新时间</th>
+        <th style="width:70px"></th>
       </tr></thead>
-      <tbody id="trBody"><tr><td colspan="9"><div class="empty">先点上面「拉取全部站点」</div></td></tr></tbody>
+      <tbody id="trBody"><tr><td colspan="11"><div class="empty">先点上面「拉取全部站点」</div></td></tr></tbody>
     </table></div></div>
     <p class="hint" id="trCount" style="margin:9px 0 0"></p>
   </div>
@@ -1381,11 +1393,50 @@ async function loadTraffic(filtered){
     }
     if($('#fUnfetched').checked) p.set('include_unfetched', 'true');
     const r = await api('/api/traffic?' + p.toString());
+
+    /* 流量是按窗口分别缓存的：在「近 7 天」拉的数据，切到「近 28 天」是看不到的。
+       首次进这一页时选"数据最全的那个窗口"，而不是配置里那个固定值——
+       否则默认窗口只要碰巧拉得少，看到的就是一张几乎空的表，
+       跟"功能坏了"长得一模一样，而真相是数据都在另一个窗口里。 */
+    if(!S.trafficPicked){
+      S.trafficPicked = true;
+      const cur = (r.windows || []).find(w => w.window_days === r.window_days);
+      const best = (r.windows || []).slice()
+        .sort((a, b) => (b.gsc + b.ga) - (a.gsc + a.ga))[0];
+      const score = w => w ? w.gsc + w.ga : 0;
+      if(best && score(best) > score(cur) && best.window_days !== r.window_days
+         && $(`#trWindow option[value="${best.window_days}"]`)){
+        $('#trWindow').value = best.window_days;
+        toast(`「近 ${best.window_days} 天」的数据更全（${best.gsc} 个站，`
+          + `GA ${best.ga}），已自动切过去`);
+        return loadTraffic(filtered);
+      }
+    }
+
     S.traffic = r.rows;
     S.trafficWindow = r.window_days;
+    S.trafficWindows = r.windows || [];
+    S.trafficResp = r;             // 点表头重排时拿它重绘，不用再请求一次
+    S.trafficFiltered = !!filtered;
     renderTraffic(r, filtered);
     renderGaBanner(r);
   }catch(e){ toast(e.message, 'err'); }
+}
+
+/* 各窗口的数据量，摆在窗口选择器旁边。没有这个，"共 12 个站点有数据"
+   会被读成"只有 12 个站有流量"，而真相是另外 79 个站的数据在别的窗口里。 */
+function renderWindowHint(){
+  const ws = S.trafficWindows || [];
+  if(!ws.length){
+    $('#trHint').innerHTML = '<b>还没有任何流量数据</b>，先点「拉取全部站点」。';
+    return;
+  }
+  $('#trHint').innerHTML = '已缓存：' + ws.map(w => {
+    const on = w.window_days === S.trafficWindow;
+    const ga = w.ga ? `，GA ${w.ga}` : '，<b>无 GA</b>';
+    const t = `近 ${w.window_days} 天 ${w.gsc} 站${ga}`;
+    return on ? `<b class="wnow">${t}</b>` : t;
+  }).join(' · ') + '（换窗口要重新拉一次）';
 }
 
 function renderGaBanner(r){
@@ -1411,7 +1462,73 @@ function renderGaBanner(r){
   el.classList.remove('hide');
 }
 
+/* 空表必须说清是哪一种空：本窗口没拉过、这个指标没数据、还是阈值真的没人达到。
+   只写"没有符合条件的站点"会让人以为功能坏了。 */
+function emptyWhy(r, filtered){
+  const cur = (r.windows || []).find(w => w.window_days === r.window_days);
+  const isGa = GA_METRICS.has(r.metric || $('#fMetric').value);
+  const other = (r.windows || []).filter(w => w.window_days !== r.window_days
+    && (isGa ? w.ga : w.gsc) > 0);
+  const jump = other.length
+    ? '<br>有数据的窗口：' + other.map(w =>
+        `<button class="btn sm" data-tr-win="${w.window_days}">近 ${w.window_days} 天（${isGa ? w.ga : w.gsc} 站）</button>`
+      ).join(' ')
+    : '';
+
+  if(!cur) return `<b>近 ${r.window_days} 天还没拉取过流量数据。</b><br>`
+    + '点上面的「拉取全部站点」，或换一个已经拉过的窗口。'
+    + '<span class="hint">流量按窗口分别缓存，换窗口要重新拉一次。</span>' + jump;
+  if(isGa && !cur.ga) return `<b>近 ${r.window_days} 天这批数据里没有 GA。</b><br>`
+    + '这个窗口是在配好 GA 之前拉的，只有 GSC 部分。'
+    + '重新点一次「拉取全部站点」就会连 GA 一起拉。' + jump;
+  return filtered
+    ? `<b>没有站点达到这个条件。</b><br><span class="hint">本窗口共 `
+      + `${isGa ? cur.ga : cur.gsc} 个站点有数据，把阈值调低些看看。</span>` + jump
+    : '本窗口还没有数据，先点「拉取全部站点」。' + jump;
+}
+
+const nfmt = v => v == null ? '0' : Number(v).toLocaleString('zh-CN');
+
+/* 点表头排序。默认方向按指标本身的"好"的方向来：平均排名越小越好所以升序，
+   跳出率越低越好所以升序，其余（展现、点击、会话、浏览量）都是越大越好、降序。
+   一上来就给出符合直觉的排列，省掉一次多余的点击。 */
+const SORT_ASC_FIRST = new Set(['site', 'position', 'bounce_rate']);
+
+function sortTraffic(rows){
+  const s = S.trSort;
+  if(!s) return rows;
+  const sign = s.dir === 'asc' ? 1 : -1;
+  const okOf = x => (['sessions','users','views','bounce_rate'].includes(s.col)
+    ? x.ga_ok : x.gsc_ok);
+  return rows.slice().sort((a, b) => {
+    if(s.col === 'site') return sign * String(a.site).localeCompare(String(b.site));
+    if(s.col === 'updated_at')
+      return sign * String(a.updated_at || '').localeCompare(String(b.updated_at || ''));
+    /* 没拉到数据的行一律沉底，无论升序降序——否则升序时一堆"—"占满开头，
+       把真正有数据的站点挤到看不见的地方。 */
+    const av = okOf(a) ? a[s.col] : null, bv = okOf(b) ? b[s.col] : null;
+    if(av == null && bv == null) return 0;
+    if(av == null) return 1;
+    if(bv == null) return -1;
+    return sign * (av - bv);
+  });
+}
+
+function renderSortHeads(){
+  $$('#p-traffic thead [data-sort]').forEach(th => {
+    const on = S.trSort && S.trSort.col === th.dataset.sort;
+    th.classList.toggle('sorted', !!on);
+    th.dataset.arrow = on ? (S.trSort.dir === 'asc' ? '▲' : '▼') : '';
+  });
+}
+
 function renderTraffic(r, filtered){
+  /* 筛选之后按筛的那个指标排，跟用户刚表达的意图一致 */
+  if(filtered && r.metric && (!S.trSort || S.trSort.byFilter))
+    S.trSort = {col: r.metric, dir: SORT_ASC_FIRST.has(r.metric) ? 'asc' : 'desc',
+                byFilter: true};
+  S.traffic = sortTraffic(S.traffic);
+  renderSortHeads();
   const rows = S.traffic;
   const metricCn = $('#fMetric').selectedOptions[0].textContent;
   const opCn = $('#fOp').selectedOptions[0].textContent.replace(/[≥≤] /, '');
@@ -1423,16 +1540,20 @@ function renderTraffic(r, filtered){
 
   $('#trBody').innerHTML = rows.length ? rows.map(x => `<tr>
     <td class="u">${esc(x.site)}</td>
-    <td class="num">${x.gsc_ok ? (x.impressions ?? 0) : '<span class="hint">未拉取</span>'}</td>
-    <td class="num">${x.gsc_ok ? (x.clicks ?? 0) : '—'}</td>
+    <td class="num">${x.gsc_ok ? nfmt(x.impressions) : '<span class="hint">未拉取</span>'}</td>
+    <td class="num">${x.gsc_ok ? nfmt(x.clicks) : '—'}</td>
     <td class="num">${x.gsc_ok && x.ctr != null ? (x.ctr*100).toFixed(2) + '%' : '—'}</td>
     <td class="num">${x.gsc_ok && x.position ? x.position.toFixed(1) : '—'}</td>
-    <td class="num">${x.ga_ok ? (x.sessions ?? 0) : '<span class="hint">—</span>'}</td>
-    <td class="num">${x.ga_ok ? (x.users ?? 0) : '—'}</td>
+    <td class="num">${x.ga_ok ? nfmt(x.sessions) : '<span class="hint">—</span>'}</td>
+    <td class="num">${x.ga_ok ? nfmt(x.users) : '—'}</td>
+    <td class="num">${x.ga_ok ? nfmt(x.views) : '—'}</td>
+    <td class="num">${x.ga_ok && x.bounce_rate != null ? (x.bounce_rate*100).toFixed(1) + '%' : '—'}</td>
     <td class="num">${x.updated_at ? esc(localDate(x.updated_at)) : '—'}</td>
     <td><button class="btn sm" data-tr-go="${esc(x.site)}">详情</button></td>
-  </tr>`).join('') : '<tr><td colspan="9"><div class="empty">没有符合条件的站点</div></td></tr>';
+  </tr>`).join('')
+    : `<tr><td colspan="11"><div class="empty">${emptyWhy(r, filtered)}</div></td></tr>`;
 
+  renderWindowHint();
   $('#trCount').textContent = rows.length
     ? `GSC 数据截止到 2~3 天前（Google 自身延迟）。GA 那两列为空说明还没授权或还没配属性。` : '';
 
@@ -1441,7 +1562,21 @@ function renderTraffic(r, filtered){
     $('#site').dispatchEvent(new Event('change'));
     loadTrafficSite(b.dataset.trGo);
   });
+  $$('#trBody [data-tr-win]').forEach(b => b.onclick = () => {
+    $('#trWindow').value = b.dataset.trWin;
+    loadTraffic(filtered);
+  });
 }
+
+$$('#p-traffic thead [data-sort]').forEach(th => th.onclick = () => {
+  const col = th.dataset.sort;
+  S.trSort = (S.trSort && S.trSort.col === col)
+    ? {col, dir: S.trSort.dir === 'asc' ? 'desc' : 'asc'}   // 同一列再点就反转
+    : {col, dir: SORT_ASC_FIRST.has(col) ? 'asc' : 'desc'};
+  /* 用上一次的响应重绘，别把"筛选条件：…"那行副标题冲掉——
+     排序不改变筛选结果，只改变排列顺序 */
+  renderTraffic(S.trafficResp || {}, S.trafficFiltered);
+});
 
 $('#btnFilter').onclick = () => loadTraffic(true);
 $('#btnFilterClear').onclick = () => loadTraffic(false);

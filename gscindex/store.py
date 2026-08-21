@@ -547,6 +547,24 @@ class Store:
         with self._lock:
             return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
+    def traffic_windows(self) -> list[dict]:
+        """每个窗口各有多少站点的数据，GSC / GA 分开计。
+
+        流量是按窗口分别缓存的：在「近 7 天」拉的数据，切到「近 28 天」是看不到的。
+        少了这份汇总，界面就只能说"共 N 个站点有数据"，而当 N 恰好很小时，
+        看起来跟"功能坏了"一模一样——实际只是数据在另一个窗口里。
+        """
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT window_days,
+                          COUNT(*)                AS sites,
+                          SUM(gsc_ok)             AS gsc,
+                          SUM(ga_ok)              AS ga,
+                          MAX(updated_at)         AS updated_at
+                     FROM site_traffic GROUP BY window_days ORDER BY window_days"""
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def traffic_row(self, site: str, window_days: int = 28) -> dict | None:
         with self._lock:
             r = self.conn.execute(
