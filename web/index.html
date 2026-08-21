@@ -457,6 +457,7 @@ ol.steps b{color:var(--text)}
     <div class="row">
       <label class="hint">统计窗口</label>
       <select id="trWindow">
+        <option value="1">今日</option>
         <option value="7">近 7 天</option>
         <option value="28" selected>近 28 天</option>
         <option value="90">近 90 天</option>
@@ -466,6 +467,17 @@ ol.steps b{color:var(--text)}
       <button class="btn" id="btnGaDiscover">自动匹配 GA 属性</button>
       <span class="hint" id="trHint"></span>
     </div>
+  </div>
+
+  <div class="card" id="rtCard">
+    <div class="row" style="align-items:baseline">
+      <h2 style="margin:0">此刻在线</h2>
+      <span class="hint">GA 实时报表，最近 30 分钟的滚动窗口。GSC 完全给不了这个。</span>
+      <div class="spacer"></div>
+      <button class="btn sm" id="btnRtAll">查全部站点</button>
+      <button class="btn sm primary" id="btnRt">刷新</button>
+    </div>
+    <div id="rtBody"><p class="hint" style="margin:10px 0 0">点「刷新」查看此刻站上有多少人。</p></div>
   </div>
 
   <div class="card">
@@ -498,6 +510,7 @@ ol.steps b{color:var(--text)}
       <label class="chk"><input type="checkbox" id="fUnfetched">把"还没拉取过"的站点也列出来
         <span class="hint">默认不含——否则会以 0 混进"零流量"结果里，把人误导</span></label>
     </div>
+    <p class="hint" id="trDates" style="margin:0 0 9px"></p>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
         <th data-sort="site">站点</th>
@@ -1378,6 +1391,9 @@ $('#btnWebLogout').onclick = async () => {
 
 /* ---------------- 流量数据 ---------------- */
 const trWindow = () => Number($('#trWindow').value) || 28;
+/* window_days=1 在界面上叫「今日」。叫"近 1 天"既拗口又容易让人以为是
+   完整的一天——GSC 那半边给的其实是三天前那一整天。 */
+const winCn = w => w === 1 ? '今日' : '近 ' + w + ' 天';
 /* 哪些指标来自 GA。空表提示要靠它判断该说"这批没有 GA"还是"阈值太高"，
    漏一个新指标就会给出错误的诊断。跟后端 store.GA_COLUMNS 保持一致。 */
 const GA_METRICS = new Set(['sessions','users','views','events','bounce_rate']);
@@ -1413,7 +1429,7 @@ async function loadTraffic(filtered){
       if(best && score(best) > score(cur) && best.window_days !== r.window_days
          && $(`#trWindow option[value="${best.window_days}"]`)){
         $('#trWindow').value = best.window_days;
-        toast(`「近 ${best.window_days} 天」的数据更全（${best.gsc} 个站，`
+        toast(`「${winCn(best.window_days)}」的数据更全（${best.gsc} 个站，`
           + `GA ${best.ga}），已自动切过去`);
         return loadTraffic(filtered);
       }
@@ -1440,7 +1456,7 @@ function renderWindowHint(){
   $('#trHint').innerHTML = '已缓存：' + ws.map(w => {
     const on = w.window_days === S.trafficWindow;
     const ga = w.ga ? `，GA ${w.ga}` : '，<b>无 GA</b>';
-    const t = `近 ${w.window_days} 天 ${w.gsc} 站${ga}`;
+    const t = `${winCn(w.window_days)} ${w.gsc} 站${ga}`;
     return on ? `<b class="wnow">${t}</b>` : t;
   }).join(' · ') + '（换窗口要重新拉一次）';
 }
@@ -1468,6 +1484,32 @@ function renderGaBanner(r){
   el.classList.remove('hide');
 }
 
+/* GSC 和 GA 在同一个窗口下查的其实不是同一段日期：GSC 末端要往前推 3 天
+   （它没有更新的数据），GA 能查到今天。「今日」窗口下这个差别最刺眼——
+   GA 是今天，GSC 是三天前——所以把两个真实日期直接写在表格上方。
+   不写的话，同一行里的数字看起来像同一天的，会导出错误结论。 */
+function renderDates(r){
+  const d = r.dates, el = $('#trDates');
+  if(!d){ el.textContent = ''; return; }
+  const span = x => x.start === x.end ? x.start : `${x.start} ~ ${x.end}`;
+  const today = r.window_days === 1;
+  el.innerHTML =
+    `本表日期：<b>GSC ${span(d.gsc)}</b>`
+    + (today ? `（Google 自身延迟 ${d.gsc_lag_days} 天，<b>没有今天的数据</b>，这是它最新可用的一天）` : '')
+    + ` · <b>GA ${span(d.ga)}</b>`
+    + (today ? '（就是今天，但今天还没过完，是<b>当日累计</b>）' : '')
+    + (today ? '<br>两边不是同一天，<b>不要横向对照</b>——GSC 那几列反映的是三天前的搜索表现。' : '');
+}
+
+/* 「今日」窗口的缓存会隔夜失效：昨天拉的数据今天打开还标着"今日"，
+   数字却是昨天的。其他窗口不会这么刺眼（少一天差别不大），但今日窗口
+   差一天就是完全错的，所以单独检出来。 */
+function staleToday(r){
+  if(r.window_days !== 1 || !r.dates) return [];
+  return (S.traffic || []).filter(x =>
+    x.updated_at && localDate(x.updated_at) !== r.dates.today);
+}
+
 /* 空表必须说清是哪一种空：本窗口没拉过、这个指标没数据、还是阈值真的没人达到。
    只写"没有符合条件的站点"会让人以为功能坏了。 */
 function emptyWhy(r, filtered){
@@ -1477,14 +1519,14 @@ function emptyWhy(r, filtered){
     && (isGa ? w.ga : w.gsc) > 0);
   const jump = other.length
     ? '<br>有数据的窗口：' + other.map(w =>
-        `<button class="btn sm" data-tr-win="${w.window_days}">近 ${w.window_days} 天（${isGa ? w.ga : w.gsc} 站）</button>`
+        `<button class="btn sm" data-tr-win="${w.window_days}">${winCn(w.window_days)}（${isGa ? w.ga : w.gsc} 站）</button>`
       ).join(' ')
     : '';
 
-  if(!cur) return `<b>近 ${r.window_days} 天还没拉取过流量数据。</b><br>`
+  if(!cur) return `<b>${winCn(r.window_days)}还没拉取过流量数据。</b><br>`
     + '点上面的「拉取全部站点」，或换一个已经拉过的窗口。'
     + '<span class="hint">流量按窗口分别缓存，换窗口要重新拉一次。</span>' + jump;
-  if(isGa && !cur.ga) return `<b>近 ${r.window_days} 天这批数据里没有 GA。</b><br>`
+  if(isGa && !cur.ga) return `<b>${winCn(r.window_days)}这批数据里没有 GA。</b><br>`
     + '这个窗口是在配好 GA 之前拉的，只有 GSC 部分。'
     + '重新点一次「拉取全部站点」就会连 GA 一起拉。' + jump;
   return filtered
@@ -1540,8 +1582,8 @@ function renderTraffic(r, filtered){
   $('#trSub').textContent = filtered
     ? `筛选条件：${metricCn} ${opCn} ${$('#fVal').value}`
       + ($('#fOp').value === 'between' ? ` ~ ${$('#fVal2').value}` : '')
-      + ` · 近 ${S.trafficWindow} 天 · 命中 ${rows.length} 个站点`
-    : `近 ${S.trafficWindow} 天，共 ${rows.length} 个站点有数据。按指标筛出达标的站点，比如「GSC 曝光量 ≥ 1000」。`;
+      + ` · ${winCn(S.trafficWindow)} · 命中 ${rows.length} 个站点`
+    : `${winCn(S.trafficWindow)}，共 ${rows.length} 个站点有数据。按指标筛出达标的站点，比如「GSC 曝光量 ≥ 1000」。`;
 
   $('#trBody').innerHTML = rows.length ? rows.map(x => `<tr>
     <td class="u">${esc(x.site)}</td>
@@ -1561,7 +1603,12 @@ function renderTraffic(r, filtered){
     : `<tr><td colspan="12"><div class="empty">${emptyWhy(r, filtered)}</div></td></tr>`;
 
   renderWindowHint();
-  $('#trCount').textContent = rows.length
+  renderDates(r);
+  const stale = staleToday(r);
+  if(stale.length){
+    $('#trCount').innerHTML = `<b>其中 ${stale.length} 个站点的「今日」数据是之前某天拉的</b>，`
+      + '不是今天的——今日窗口隔夜就失效了，重新点「拉取全部站点」。';
+  } else $('#trCount').textContent = rows.length
     ? `GSC 数据截止到 2~3 天前（Google 自身延迟）。GA 那两列为空说明还没授权或还没配属性。` : '';
 
   $$('#trBody [data-tr-go]').forEach(b => b.onclick = () => {
@@ -1584,6 +1631,69 @@ $$('#p-traffic thead [data-sort]').forEach(th => th.onclick = () => {
      排序不改变筛选结果，只改变排列顺序 */
   renderTraffic(S.trafficResp || {}, S.trafficFiltered);
 });
+
+/* ---- 此刻在线（GA 实时报表，最近 30 分钟）---- */
+async function loadRealtime(allSites){
+  const btn = allSites ? $('#btnRtAll') : $('#btnRt');
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = '查询中…';
+  try{
+    const sites = allSites
+      ? [...document.querySelectorAll('#site option')].map(o => o.value).filter(Boolean)
+      : [site()].filter(Boolean);
+    if(!sites.length) return toast('先在上面选一个站点', 'err');
+    const r = await api('/api/traffic/realtime', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sites, top: 3, account: S.acctFilter})});
+    if(r.error) return toast(r.error, 'err');
+    renderRealtime(r);
+  }catch(e){ toast(e.message, 'err'); }
+  finally{ btn.disabled = false; btn.textContent = was; }
+}
+
+function renderRealtime(r){
+  const rows = r.rows || [];
+  if(!rows.length){
+    $('#rtBody').innerHTML = '<p class="hint" style="margin:10px 0 0">'
+      + '没有可查的站点。实时数据要先配好站点与 GA4 属性的对应关系。</p>';
+    return;
+  }
+  const total = rows.reduce((a, x) => a + (x.ok ? x.active_users : 0), 0);
+  const live = rows.filter(x => x.ok && x.active_users > 0);
+  const quiet = rows.filter(x => x.ok && !x.active_users);
+  const bad = rows.filter(x => !x.ok);
+
+  $('#rtBody').innerHTML = `
+    <div class="row" style="margin:11px 0 4px;align-items:baseline;gap:14px">
+      <div><span style="font-size:26px;font-weight:700">${nfmt(total)}</span>
+        <span class="hint"> 人此刻在线</span></div>
+      <span class="hint">${live.length} 个站点有人 · ${quiet.length} 个站点无人${
+        bad.length ? ` · ${bad.length} 个查询失败` : ''}</span>
+      <div class="spacer"></div>
+      <span class="hint">${localTime(new Date().toISOString())} 刷新</span>
+    </div>` + (live.length ? `
+    <div class="tbox" style="margin-top:8px"><div class="tscroll" style="max-height:260px"><table>
+      <thead><tr><th>站点</th><th style="width:82px">在线</th>
+        <th style="width:82px">浏览</th><th style="width:82px">事件</th>
+        <th>正在看</th></tr></thead>
+      <tbody>${live.map(x => `<tr>
+        <td class="u">${esc(x.site)}</td>
+        <td class="num"><b>${nfmt(x.active_users)}</b></td>
+        <td class="num">${nfmt(x.views)}</td>
+        <td class="num">${nfmt(x.events)}</td>
+        <td class="hint">${(x.top_pages || []).length
+          ? esc((x.top_pages || []).map(t => t.page).join(' · ')) : '—'}</td>
+      </tr>`).join('')}</tbody>
+    </table></div></div>` : `
+    <p class="hint" style="margin:8px 0 0">这些站点最近 30 分钟都没有活跃用户。</p>`)
+    + (r.unmapped && r.unmapped.length ? `<p class="hint" style="margin:8px 0 0">`
+      + `${r.unmapped.length} 个站点还没配 GA4 属性，查不了实时——点上面「自动匹配 GA 属性」。</p>` : '')
+    + (bad.length ? `<p class="hint" style="margin:6px 0 0">失败：`
+      + esc(bad.map(x => x.site + '（' + (x.message || '未知') + '）').join('；')) + '</p>' : '');
+}
+
+$('#btnRt').onclick = () => loadRealtime(false);
+$('#btnRtAll').onclick = () => loadRealtime(true);
 
 $('#btnFilter').onclick = () => loadTraffic(true);
 $('#btnFilterClear').onclick = () => loadTraffic(false);

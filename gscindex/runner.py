@@ -743,6 +743,66 @@ class Engine:
             "accounts_without_ga": [a.name for a in oauth_accs if a not in with_ga],
         }
 
+    def traffic_realtime(self, sites: list[str], *, account_name: str = "",
+                         top: int = 5) -> dict:
+        """最近 30 分钟的实时活跃，按站点逐个查。
+
+        同步返回、不走任务系统：实时数据的价值就在于立刻看到，
+        丢进后台任务再等 SSE 推回来反而更慢，而且站点数一般只有几个。
+        """
+        _acc, token = self._traffic_token(account_name, need_analytics=True)
+        if not token:
+            return {"error": "没有拿到 GA 权限的凭据，请到「账号管理」重新授权一次。",
+                    "rows": []}
+        pmap = self.cfg.ga_property_map or {}
+        todo, missing = [], []
+        for site in sites:
+            pid = pmap.get(site)
+            (todo.append((site, pid)) if pid else missing.append(site))
+
+        # 并发拿总数。串行的话 79 个站点要跑几分钟——实时数据的全部价值
+        # 就在于立刻看到，慢了就没意义了。
+        # 这一步刻意不要页面明细：绝大多数站此刻根本没人在线，
+        # 给每个站都多要一次明细就是几十次白花的请求。
+        def totals(item):
+            site, pid = item
+            rt = traffic.ga_realtime(
+                token, pid, with_pages=False, timeout=self.cfg.request_timeout
+            )
+            return {
+                "site": site, "property_id": pid, "ok": rt.ok,
+                "active_users": rt.active_users, "views": rt.views,
+                "events": rt.events, "top_pages": [], "message": rt.message,
+            }
+
+        rows: list[dict] = []
+        if todo:
+            with ThreadPoolExecutor(
+                max_workers=min(max(1, self.cfg.concurrency * 2), len(todo))
+            ) as ex:
+                rows = [f.result() for f in as_completed(
+                    [ex.submit(totals, it) for it in todo]
+                )]
+
+        # 第二趟：只给真的有人在线的站点要页面明细
+        hot = [r for r in rows if r["ok"] and r["active_users"] > 0]
+        if hot:
+            def pages(row):
+                row["top_pages"] = traffic.ga_realtime_pages(
+                    token, row["property_id"], top=top,
+                    timeout=self.cfg.request_timeout
+                )
+
+            with ThreadPoolExecutor(
+                max_workers=min(max(1, self.cfg.concurrency * 2), len(hot))
+            ) as ex:
+                list(as_completed([ex.submit(pages, r) for r in hot]))
+
+        # 按此刻在线人数排，最热的站点排最前
+        rows.sort(key=lambda r: (r["ok"], r["active_users"]), reverse=True)
+        return {"rows": rows, "unmapped": missing,
+                "checked": len(rows), "live": len(hot)}
+
     def ga_discover(self, *, account_name: str = "", emit: Emit = _noop) -> dict:
         """列出账号下全部 GA4 属性，并自动跟 GSC 站点配对。
 

@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from gscindex import config as config_mod
-from gscindex import sources, webauto
+from gscindex import sources, traffic, webauto
 from gscindex.auth import AccountPool
 from gscindex.runner import Engine
 from gscindex.store import Store
@@ -256,18 +256,29 @@ def cmd_traffic(args) -> None:
     if val is not None:
         cond = f"（{args.metric} " + (f"{val}~{val2}" if val2 is not None
                                      else ("≥" if op == "gte" else "≤") + str(val)) + "）"
+    gs, ge = traffic.window(w, lag=traffic.GSC_LAG_DAYS)
+    as_, ae = traffic.window(w)
+    win_cn = "今日" if w == 1 else f"近 {w} 天"
+
     print()
-    print(f"近 {w} 天流量排行{cond}，命中 {len(rows)} 个站点：")
+    print(f"{win_cn}流量排行{cond}，命中 {len(rows)} 个站点：")
     print()
-    print(f"  {'站点':<36} {'展现':>7} {'点击':>6} {'排名':>7} {'GA会话':>8}")
+    print(f"  {'站点':<36} {'曝光':>7} {'点击':>6} {'排名':>7} {'GA会话':>8} {'GA事件':>8}")
     for r in rows[: args.limit]:
         ga = str(r["sessions"]) if r["ga_ok"] else "-"
+        ev = str(r["events"]) if (r["ga_ok"] and r["events"] is not None) else "-"
         print(f"  {r['site']:<36} {r['impressions'] or 0:>7} {r['clicks'] or 0:>6}"
-              f" {(r['position'] or 0):>7.1f} {ga:>8}")
+              f" {(r['position'] or 0):>7.1f} {ga:>8} {ev:>8}")
     if len(rows) > args.limit:
         print(f"  …… 其余 {len(rows) - args.limit} 个")
     print()
-    print("注：GSC 数据截止到 2~3 天前（Google 自身延迟）；GA 列为 - 表示还没授权或还没配属性。")
+    # 两边查的不是同一段日期，必须写清楚。窗口为 1 天时差得最远：
+    # GA 是今天，GSC 是三天前——不说明的话同一行的数字看着像同一天的。
+    gsc_span = gs if gs == ge else f"{gs}~{ge}"
+    ga_span = as_ if as_ == ae else f"{as_}~{ae}"
+    print(f"注：GSC 列的日期是 {gsc_span}（Google 自身延迟 {traffic.GSC_LAG_DAYS} 天，"
+          f"没有今天的数据）；GA 列是 {ga_span}。")
+    print("    两边不是同一段日期，不要横向对照。GA 列为 - 表示还没授权或还没配属性。")
 
 
 def cmd_serve(args) -> None:
@@ -313,11 +324,15 @@ def main() -> None:
     m.add_argument("--submit", help="提交站点地图给 GSC")
     m.set_defaults(fn=cmd_sitemap)
 
-    tr = sub.add_parser("traffic", help="流量排行与筛选（GSC 展现/点击 + GA 会话）")
+    tr = sub.add_parser("traffic", help="流量排行与筛选（GSC 曝光/点击 + GA 会话/事件）")
     tr.add_argument("--refresh", action="store_true", help="先拉取最新数据再显示")
-    tr.add_argument("--window", type=int, help="统计窗口天数，默认取配置值")
+    tr.add_argument("--window", type=int,
+                    help="统计窗口天数，默认取配置值；--window 1 就是「今日」"
+                         "（GA 是今天，GSC 是它最新可用的那一天）")
+    # choices 直接取自后端白名单，不再另抄一份——上次加 events 时这里就漏了，
+    # 后端支持而 CLI 报"invalid choice"。
     tr.add_argument("--metric", default="impressions",
-                    choices=["impressions", "clicks", "position", "sessions", "users", "views"],
+                    choices=sorted(Store.TRAFFIC_METRICS),
                     help="排序/筛选用的指标")
     tr.add_argument("--min", type=float, help="下限，比如 --min 1000")
     tr.add_argument("--max", type=float, help="上限；跟 --min 同时给就是区间")

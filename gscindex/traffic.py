@@ -30,6 +30,7 @@ from .api import _request, _err_message
 
 SEARCH_ANALYTICS = "https://www.googleapis.com/webmasters/v3/sites/{site}/searchAnalytics/query"
 GA_DATA = "https://analyticsdata.googleapis.com/v1beta/properties/{prop}:runReport"
+GA_REALTIME = ("https://analyticsdata.googleapis.com/v1beta/properties/{prop}:runRealtimeReport")
 GA_ADMIN_ACCOUNTS = "https://analyticsadmin.googleapis.com/v1beta/accountSummaries"
 GA_ADMIN_STREAMS = "https://analyticsadmin.googleapis.com/v1beta/properties/{prop}/dataStreams"
 
@@ -58,6 +59,10 @@ class GscTotals:
     impressions: int = 0
     ctr: float = 0.0
     position: float = 0.0
+    # 实际查询的日期区间。必须带出来：GSC 有 2~3 天延迟，"今日"窗口下
+    # 它给的其实是三天前那一天，界面不把日期标出来就会被当成今天的数字。
+    start: str = ""
+    end: str = ""
     message: str = ""
 
 
@@ -80,11 +85,13 @@ def gsc_totals(
         max_retries=3,
     )
     if resp.status_code != 200:
-        return GscTotals(site_url, False, message=_err_message(resp))
+        return GscTotals(site_url, False, start=start, end=end,
+                         message=_err_message(resp))
     rows = (resp.json() or {}).get("rows") or []
     if not rows:
         # 没有 rows 不是错误，是这个站点在这段时间里真的一次展现都没有
-        return GscTotals(site_url, True, message="窗口内没有任何展现")
+        return GscTotals(site_url, True, start=start, end=end,
+                         message="窗口内没有任何曝光")
     r = rows[0]
     return GscTotals(
         site=site_url,
@@ -93,6 +100,8 @@ def gsc_totals(
         impressions=int(r.get("impressions") or 0),
         ctr=float(r.get("ctr") or 0.0),
         position=float(r.get("position") or 0.0),
+        start=start,
+        end=end,
     )
 
 
@@ -306,6 +315,8 @@ class GaTotals:
     views: int = 0
     bounce_rate: float = 0.0
     events: int = 0
+    start: str = ""
+    end: str = ""
     message: str = ""
 
 
@@ -332,10 +343,12 @@ def ga_totals(
         max_retries=3,
     )
     if resp.status_code != 200:
-        return GaTotals(property_id, False, message=_err_message(resp))
+        return GaTotals(property_id, False, start=start, end=end,
+                        message=_err_message(resp))
     rows = (resp.json() or {}).get("rows") or []
     if not rows:
-        return GaTotals(property_id, True, message="窗口内没有任何会话")
+        return GaTotals(property_id, True, start=start, end=end,
+                        message="窗口内没有任何会话")
     vals = rows[0].get("metricValues") or []
 
     def num(i: int) -> float:
@@ -352,7 +365,112 @@ def ga_totals(
         views=int(num(2)),
         bounce_rate=num(3),
         events=int(num(4)),
+        start=start,
+        end=end,
     )
+
+
+@dataclass
+class GaRealtime:
+    property_id: str
+    ok: bool
+    active_users: int = 0
+    views: int = 0
+    events: int = 0
+    top_pages: list[dict] = field(default_factory=list)
+    message: str = ""
+
+
+def ga_realtime(
+    token: str, property_id: str, *, top: int = 5, with_pages: bool = True,
+    timeout: int = 30
+) -> GaRealtime:
+    """最近 30 分钟的实时数据。GSC 完全给不了这个，只有 GA 有。
+
+    走的是 runRealtimeReport，跟常规报表同一个 Data API、同一个
+    analytics.readonly 权限，不用额外启用什么。实时接口只认少数几个指标，
+    activeUsers 是其中最有用的一个——它回答"此刻站上有几个人"。
+
+    注意实时报表和常规报表的口径不同，实时是"最近 30 分钟"的滚动窗口，
+    不是"今天累计"，两个数不该互相对照。
+    """
+    resp = _request(
+        "POST",
+        GA_REALTIME.format(prop=property_id),
+        token,
+        json_body={
+            "metrics": [
+                {"name": "activeUsers"},
+                {"name": "screenPageViews"},
+                {"name": "eventCount"},
+            ]
+        },
+        timeout=timeout,
+        max_retries=2,
+    )
+    if resp.status_code != 200:
+        return GaRealtime(property_id, False, message=_err_message(resp))
+    rows = (resp.json() or {}).get("rows") or []
+    if not rows:
+        # 没有 rows 是"此刻确实没人在线"，不是错误
+        return GaRealtime(property_id, True, message="最近 30 分钟没有活跃用户")
+
+    def num(vals, i: int) -> int:
+        try:
+            return int(float(vals[i].get("value") or 0))
+        except (IndexError, AttributeError, ValueError):
+            return 0
+
+    vals = rows[0].get("metricValues") or []
+    out = GaRealtime(
+        property_id=property_id,
+        ok=True,
+        active_users=num(vals, 0),
+        views=num(vals, 1),
+        events=num(vals, 2),
+    )
+
+    if with_pages:
+        out.top_pages = ga_realtime_pages(
+            token, property_id, top=top, timeout=timeout
+        )
+    return out
+
+
+def ga_realtime_pages(
+    token: str, property_id: str, *, top: int = 5, timeout: int = 30
+) -> list[dict]:
+    """此刻这些人在看哪些页面。单独一个函数、单独一次请求。
+
+    刻意跟 ga_realtime 分开：全站点扫描时给每个站都多要一次页面明细，
+    79 个站就是 79 次白花的请求，而绝大多数站此刻根本没人在线。
+    调用方应该先拿总数、再只对有人的站点要明细。
+    """
+    resp = _request(
+        "POST",
+        GA_REALTIME.format(prop=property_id),
+        token,
+        json_body={
+            "dimensions": [{"name": "unifiedScreenName"}],
+            "metrics": [{"name": "activeUsers"}],
+            "limit": min(top, 20),
+            "orderBys": [{"metric": {"metricName": "activeUsers"}, "desc": True}],
+        },
+        timeout=timeout,
+        max_retries=1,
+    )
+    if resp.status_code != 200:
+        return []   # 明细拿不到不影响总数，静默降级
+    out = []
+    for r in (resp.json() or {}).get("rows") or []:
+        dims = r.get("dimensionValues") or [{}]
+        vals = r.get("metricValues") or []
+        try:
+            n = int(float(vals[0].get("value") or 0))
+        except (IndexError, AttributeError, ValueError):
+            n = 0
+        out.append({"page": dims[0].get("value", ""), "active_users": n})
+    return out
 
 
 def ga_breakdown(

@@ -12,13 +12,14 @@ import sys
 import threading
 import uuid
 import webbrowser
+from datetime import date
 from pathlib import Path
 
 from fastapi import Body, FastAPI, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from gscindex import config as config_mod
-from gscindex import oauth, sources, webauto
+from gscindex import oauth, sources, traffic, webauto
 from gscindex.auth import KIND_OAUTH, AccountPool
 from gscindex.runner import Engine
 from gscindex.store import Store
@@ -506,6 +507,19 @@ def api_links(
     }
 
 
+def _window_dates(w: int) -> dict:
+    """这个窗口下 GSC 和 GA 各自实际查询的日期区间。
+
+    两边不一样，而且差得不小：GSC 末端要往前推 GSC_LAG_DAYS 天（它没有更新的数据），
+    GA 可以一直查到今天。窗口为 1 天时这个差别最刺眼——GA 是今天，GSC 是三天前，
+    界面必须把两个日期分别标出来，否则同一行里的数字看起来是同一天的。
+    """
+    gs, ge = traffic.window(w, lag=traffic.GSC_LAG_DAYS)
+    as_, ae = traffic.window(w)
+    return {"gsc": {"start": gs, "end": ge}, "ga": {"start": as_, "end": ae},
+            "today": date.today().isoformat(), "gsc_lag_days": traffic.GSC_LAG_DAYS}
+
+
 @app.get("/api/traffic")
 def api_traffic(
     window_days: int = 0,
@@ -532,6 +546,10 @@ def api_traffic(
     return {
         "rows": rows,
         "window_days": w,
+        # 这个窗口两边各自实际查询的日期区间。GSC 有 2~3 天延迟，"今日"窗口下
+        # 它给的是三天前那一天而不是今天——不把真实日期交给界面标出来，
+        # 用户会把 GSC 那几列当成今天的数字看。
+        "dates": _window_dates(w),
         # 每个窗口各有多少数据。流量按窗口分别缓存，在「近 7 天」拉的数据切到
         # 「近 28 天」是看不到的；把这份汇总交给界面，才能把"数据在另一个窗口"
         # 和"真的没数据"区分开，不然空表看起来就像功能坏了。
@@ -579,6 +597,18 @@ def api_traffic_refresh(body: dict = Body(...)):
         )
 
     return {"job_id": start_job("traffic", run).id}
+
+
+@app.post("/api/traffic/realtime")
+def api_traffic_realtime(body: dict = Body(...)):
+    """最近 30 分钟的实时活跃。只有 GA 有这个，GSC 完全给不了。
+
+    同步返回而不是丢后台任务：实时数据的意义就在于立刻看到。
+    """
+    sites = body.get("sites") or ([cfg.site_url] if cfg.site_url else [])
+    account = (body.get("account") or "").strip()
+    top = max(1, min(int(body.get("top") or 5), 20))
+    return engine.traffic_realtime(list(sites), account_name=account, top=top)
 
 
 @app.post("/api/ga/discover")
