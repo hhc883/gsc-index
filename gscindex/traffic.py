@@ -305,10 +305,14 @@ class GaTotals:
     users: int = 0
     views: int = 0
     bounce_rate: float = 0.0
+    events: int = 0
     message: str = ""
 
 
-GA_METRICS = ["sessions", "totalUsers", "screenPageViews", "bounceRate"]
+# 顺序即 metricValues 的下标顺序，改动这里必须同步改下面取值的 num(i)。
+# eventCount 是"事件数"：GA4 里连页面浏览、滚动、外链点击都算事件，
+# 所以它天然比会话数、浏览量大一个量级，别拿它跟 GSC 的曝光量直接比。
+GA_METRICS = ["sessions", "totalUsers", "screenPageViews", "bounceRate", "eventCount"]
 
 
 def ga_totals(
@@ -347,6 +351,7 @@ def ga_totals(
         users=int(num(1)),
         views=int(num(2)),
         bounce_rate=num(3),
+        events=int(num(4)),
     )
 
 
@@ -395,6 +400,7 @@ def ga_breakdown(
                 "users": int(num(1)),
                 "views": int(num(2)),
                 "bounce_rate": num(3),
+                "events": int(num(4)),
             }
         )
     return True, out, ""

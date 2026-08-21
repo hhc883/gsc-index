@@ -470,15 +470,16 @@ ol.steps b{color:var(--text)}
 
   <div class="card">
     <h2>筛选与排行</h2>
-    <p class="sub" id="trSub">按指标筛出达标的站点。比如「GSC 展现量 ≥ 1000」。</p>
+    <p class="sub" id="trSub">按指标筛出达标的站点。比如「GSC 曝光量 ≥ 1000」。</p>
     <div class="row" style="margin-bottom:12px">
       <select id="fMetric">
-        <option value="impressions">GSC 展现量</option>
+        <option value="impressions">GSC 曝光量</option>
         <option value="clicks">GSC 点击量</option>
         <option value="position">GSC 平均排名</option>
         <option value="sessions">GA 会话数</option>
         <option value="users">GA 用户数</option>
         <option value="views">GA 浏览量</option>
+        <option value="events">GA 事件数</option>
       </select>
       <select id="fOp">
         <option value="gte">≥ 大于等于</option>
@@ -500,18 +501,21 @@ ol.steps b{color:var(--text)}
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
         <th data-sort="site">站点</th>
-        <th data-sort="impressions" style="width:92px">GSC 展现</th>
+        <th data-sort="impressions" style="width:92px"
+            title="GSC 曝光量，即 Google 官方界面里的「展示次数」——你的页面在搜索结果里被看到的次数">GSC 曝光</th>
         <th data-sort="clicks" style="width:88px">GSC 点击</th>
         <th data-sort="ctr" style="width:82px">点击率</th>
         <th data-sort="position" style="width:92px">平均排名</th>
         <th data-sort="sessions" style="width:88px">GA 会话</th>
         <th data-sort="users" style="width:88px">GA 用户</th>
         <th data-sort="views" style="width:92px">GA 浏览量</th>
+        <th data-sort="events" style="width:92px"
+            title="GA4 eventCount。页面浏览、滚动、外链点击都算事件，所以这个数天然比会话数和浏览量大一个量级">GA 事件数</th>
         <th data-sort="bounce_rate" style="width:88px">跳出率</th>
         <th data-sort="updated_at" style="width:100px">更新时间</th>
         <th style="width:70px"></th>
       </tr></thead>
-      <tbody id="trBody"><tr><td colspan="11"><div class="empty">先点上面「拉取全部站点」</div></td></tr></tbody>
+      <tbody id="trBody"><tr><td colspan="12"><div class="empty">先点上面「拉取全部站点」</div></td></tr></tbody>
     </table></div></div>
     <p class="hint" id="trCount" style="margin:9px 0 0"></p>
   </div>
@@ -523,7 +527,7 @@ ol.steps b{color:var(--text)}
     <div class="chips" style="margin-top:14px" id="trDetailTabs">
       <button class="chip on" data-d="pages">页面表现</button>
       <button class="chip" data-d="queries">搜索词</button>
-      <button class="chip" data-d="zero">已收录但零展现</button>
+      <button class="chip" data-d="zero">已收录但零曝光</button>
     </div>
     <div class="tbox"><div class="tscroll"><table>
       <thead id="trDetailHead"></thead>
@@ -1374,7 +1378,9 @@ $('#btnWebLogout').onclick = async () => {
 
 /* ---------------- 流量数据 ---------------- */
 const trWindow = () => Number($('#trWindow').value) || 28;
-const GA_METRICS = new Set(['sessions','users','views']);
+/* 哪些指标来自 GA。空表提示要靠它判断该说"这批没有 GA"还是"阈值太高"，
+   漏一个新指标就会给出错误的诊断。跟后端 store.GA_COLUMNS 保持一致。 */
+const GA_METRICS = new Set(['sessions','users','views','events','bounce_rate']);
 
 $('#fOp').onchange = () => {
   const between = $('#fOp').value === 'between';
@@ -1490,7 +1496,7 @@ function emptyWhy(r, filtered){
 const nfmt = v => v == null ? '0' : Number(v).toLocaleString('zh-CN');
 
 /* 点表头排序。默认方向按指标本身的"好"的方向来：平均排名越小越好所以升序，
-   跳出率越低越好所以升序，其余（展现、点击、会话、浏览量）都是越大越好、降序。
+   跳出率越低越好所以升序，其余（曝光、点击、会话、浏览量、事件数）都是越大越好、降序。
    一上来就给出符合直觉的排列，省掉一次多余的点击。 */
 const SORT_ASC_FIRST = new Set(['site', 'position', 'bounce_rate']);
 
@@ -1498,8 +1504,7 @@ function sortTraffic(rows){
   const s = S.trSort;
   if(!s) return rows;
   const sign = s.dir === 'asc' ? 1 : -1;
-  const okOf = x => (['sessions','users','views','bounce_rate'].includes(s.col)
-    ? x.ga_ok : x.gsc_ok);
+  const okOf = x => (GA_METRICS.has(s.col) ? x.ga_ok : x.gsc_ok);
   return rows.slice().sort((a, b) => {
     if(s.col === 'site') return sign * String(a.site).localeCompare(String(b.site));
     if(s.col === 'updated_at')
@@ -1536,7 +1541,7 @@ function renderTraffic(r, filtered){
     ? `筛选条件：${metricCn} ${opCn} ${$('#fVal').value}`
       + ($('#fOp').value === 'between' ? ` ~ ${$('#fVal2').value}` : '')
       + ` · 近 ${S.trafficWindow} 天 · 命中 ${rows.length} 个站点`
-    : `近 ${S.trafficWindow} 天，共 ${rows.length} 个站点有数据。按指标筛出达标的站点，比如「GSC 展现量 ≥ 1000」。`;
+    : `近 ${S.trafficWindow} 天，共 ${rows.length} 个站点有数据。按指标筛出达标的站点，比如「GSC 曝光量 ≥ 1000」。`;
 
   $('#trBody').innerHTML = rows.length ? rows.map(x => `<tr>
     <td class="u">${esc(x.site)}</td>
@@ -1547,11 +1552,13 @@ function renderTraffic(r, filtered){
     <td class="num">${x.ga_ok ? nfmt(x.sessions) : '<span class="hint">—</span>'}</td>
     <td class="num">${x.ga_ok ? nfmt(x.users) : '—'}</td>
     <td class="num">${x.ga_ok ? nfmt(x.views) : '—'}</td>
+    <td class="num">${x.ga_ok && x.events != null ? nfmt(x.events)
+      : '<span class="hint" title="这批数据是在加入事件数之前拉的，重新拉一次就有了">—</span>'}</td>
     <td class="num">${x.ga_ok && x.bounce_rate != null ? (x.bounce_rate*100).toFixed(1) + '%' : '—'}</td>
     <td class="num">${x.updated_at ? esc(localDate(x.updated_at)) : '—'}</td>
     <td><button class="btn sm" data-tr-go="${esc(x.site)}">详情</button></td>
   </tr>`).join('')
-    : `<tr><td colspan="11"><div class="empty">${emptyWhy(r, filtered)}</div></td></tr>`;
+    : `<tr><td colspan="12"><div class="empty">${emptyWhy(r, filtered)}</div></td></tr>`;
 
   renderWindowHint();
   $('#trCount').textContent = rows.length
@@ -1638,8 +1645,8 @@ function trafficChart(daily){
     const x = 2 + i * bw, imp = d.impressions || 0;
     const h = (imp / max) * (H - pad - 14);
     if(imp) bars += `<rect x="${x+bw*0.15}" y="${H-pad-h}" width="${bw*0.7}" height="${Math.max(0.6,h)}"
-      fill="var(--accent)" opacity="0.75" rx="0.4"><title>${d.day} 展现 ${imp} · 点击 ${d.clicks||0}</title></rect>`;
-    // 点击量单独画折线：数量级通常比展现小得多，画成柱子会看不见
+      fill="var(--accent)" opacity="0.75" rx="0.4"><title>${d.day} 曝光 ${imp} · 点击 ${d.clicks||0}</title></rect>`;
+    // 点击量单独画折线：数量级通常比曝光小得多，画成柱子会看不见
     clickPts.push(`${x+bw/2},${H-pad-((d.clicks||0)/max)*(H-pad-14)}`);
     if(i % Math.ceil(daily.length/8) === 0)
       labels += `<text x="${x+bw/2}" y="${H-pad+8}" font-size="4" fill="var(--faint)" text-anchor="middle">${d.day.slice(5)}</text>`;
@@ -1649,7 +1656,7 @@ function trafficChart(daily){
     ${bars}
     <polyline points="${clickPts.join(' ')}" fill="none" stroke="var(--ok)" stroke-width="0.7"/>
     ${labels}</svg>
-    <p class="hint" style="margin:6px 0 0">柱状=展现量，绿线=点击量（同轴，点击通常远小于展现）</p>`;
+    <p class="hint" style="margin:6px 0 0">柱状=曝光量，绿线=点击量（同轴，点击通常远小于曝光）</p>`;
 }
 
 $$('#trDetailTabs .chip').forEach(c => c.onclick = () => {
@@ -1663,7 +1670,7 @@ async function renderTrDetail(){
   if(!r) return;
   const head = $('#trDetailHead'), body = $('#trDetailBody');
   if(S.trDetail === 'pages'){
-    head.innerHTML = `<tr><th>页面</th><th style="width:95px">展现</th><th style="width:85px">点击</th>
+    head.innerHTML = `<tr><th>页面</th><th style="width:95px">曝光</th><th style="width:85px">点击</th>
       <th style="width:85px">点击率</th><th style="width:95px">平均排名</th></tr>`;
     const rows = r.pages || [];
     body.innerHTML = rows.length ? rows.map(x => `<tr>
@@ -1672,9 +1679,9 @@ async function renderTrDetail(){
       <td class="num">${x.ctr != null ? (x.ctr*100).toFixed(2)+'%' : '—'}</td>
       <td class="num">${x.position ? x.position.toFixed(1) : '—'}</td>
     </tr>`).join('') : '<tr><td colspan="5"><div class="empty">没有页面数据</div></td></tr>';
-    $('#trDetailNote').textContent = `共 ${rows.length} 个页面有展现`;
+    $('#trDetailNote').textContent = `共 ${rows.length} 个页面有曝光`;
   } else if(S.trDetail === 'queries'){
-    head.innerHTML = `<tr><th>搜索词</th><th style="width:95px">展现</th><th style="width:85px">点击</th>
+    head.innerHTML = `<tr><th>搜索词</th><th style="width:95px">曝光</th><th style="width:85px">点击</th>
       <th style="width:85px">点击率</th><th style="width:95px">平均排名</th></tr>`;
     const rows = r.queries || [];
     body.innerHTML = rows.length ? rows.map(x => `<tr>
@@ -1686,9 +1693,9 @@ async function renderTrDetail(){
     $('#trDetailNote').textContent =
       '这是 GSC 独有的数据——别人搜什么词看到了你，GA 看不到这个。';
   } else {
-    // 已收录但零展现：这是最有指导意义的一类
+    // 已收录但零曝光：这是最有指导意义的一类
     head.innerHTML = `<tr><th>页面</th><th style="width:120px">收录状态</th>
-      <th style="width:95px">展现</th><th style="width:85px">点击</th></tr>`;
+      <th style="width:95px">曝光</th><th style="width:85px">点击</th></tr>`;
     try{
       const lr = await api('/api/traffic/links?window_days=' + trWindow()
         + '&site_url=' + encodeURIComponent(r.site_url));
@@ -1699,7 +1706,7 @@ async function renderTrDetail(){
         <td class="num">${x.impressions ?? 0}</td><td class="num">${x.clicks ?? 0}</td>
       </tr>`).join('') : '<tr><td colspan="4"><div class="empty">没有这类页面（或还没拉页面明细）</div></td></tr>';
       $('#trDetailNote').textContent = zero.length
-        ? `${zero.length} 个页面已进索引但零展现——说明这类内容没有搜索需求，`
+        ? `${zero.length} 个页面已进索引但零曝光——说明这类内容没有搜索需求，`
           + '别再把稀缺的申请名额花在同类页面上。'
         : '';
     }catch(e){ toast(e.message, 'err'); }
@@ -1709,9 +1716,10 @@ async function renderTrDetail(){
 $('#expTraffic').onclick = () => {
   if(!S.traffic.length) return toast('没有可导出的数据', 'err');
   download('站点流量.csv', toCsv(S.traffic,
-    [['站点','site'],['GSC展现','impressions'],['GSC点击','clicks'],['点击率','ctr'],
+    [['站点','site'],['GSC曝光','impressions'],['GSC点击','clicks'],['点击率','ctr'],
      ['平均排名','position'],['GA会话','sessions'],['GA用户','users'],
-     ['GA浏览量','views'],['更新时间','updated_at']]));
+     ['GA浏览量','views'],['GA事件数','events'],['跳出率','bounce_rate'],
+     ['更新时间','updated_at']]));
 };
 
 /* ---------------- GA 属性自动匹配 ---------------- */

@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS site_traffic (
     users       INTEGER,
     views       INTEGER,
     bounce_rate REAL,
+    events      INTEGER,                      -- GA4 eventCount，含浏览/滚动/外链点击等
     ga_ok       INTEGER NOT NULL DEFAULT 0,
     ga_msg      TEXT,
     updated_at  TEXT NOT NULL,
@@ -155,6 +156,15 @@ class Store:
 
     def _migrate(self) -> None:
         """轻量迁移：老库缺的列补上、老表数据搬过来，不丢数据。"""
+        # 后加的流量指标：老库里没有这些列。CREATE TABLE IF NOT EXISTS 对已存在的表
+        # 不会补列，所以必须在这里显式 ALTER，否则升级后写入直接报 no such column。
+        # 补出来的列是 NULL 而不是 0——那批数据当初根本没拉过这个指标，
+        # 填 0 会被当成"真的是 0"，界面就分不清了。
+        tr_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(site_traffic)")}
+        for col, typ in (("events", "INTEGER"),):
+            if col not in tr_cols:
+                self.conn.execute(f"ALTER TABLE site_traffic ADD COLUMN {col} {typ}")
+
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(log)")}
         if "source" not in cols:
             # 老的 Indexing API 时代的记录没有来源标记，统一回填，
@@ -447,8 +457,9 @@ class Store:
             self.conn.execute(
                 """INSERT INTO site_traffic
                      (site, window_days, impressions, clicks, ctr, position, gsc_ok, gsc_msg,
-                      ga_property, sessions, users, views, bounce_rate, ga_ok, ga_msg, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      ga_property, sessions, users, views, bounce_rate, events,
+                      ga_ok, ga_msg, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(site, window_days) DO UPDATE SET
                      impressions = COALESCE(excluded.impressions, site_traffic.impressions),
                      clicks      = COALESCE(excluded.clicks,      site_traffic.clicks),
@@ -461,6 +472,7 @@ class Store:
                      users       = COALESCE(excluded.users,       site_traffic.users),
                      views       = COALESCE(excluded.views,       site_traffic.views),
                      bounce_rate = COALESCE(excluded.bounce_rate, site_traffic.bounce_rate),
+                     events      = COALESCE(excluded.events,      site_traffic.events),
                      ga_ok       = MAX(excluded.ga_ok,            site_traffic.ga_ok),
                      ga_msg      = COALESCE(excluded.ga_msg,      site_traffic.ga_msg),
                      updated_at  = excluded.updated_at""",
@@ -477,6 +489,7 @@ class Store:
                     ga.users if ga else None,
                     ga.views if ga else None,
                     ga.bounce_rate if ga else None,
+                    ga.events if ga else None,
                     1 if (ga and ga.ok) else 0,
                     ga.message if ga else None,
                     now,
@@ -493,7 +506,12 @@ class Store:
         "sessions": "sessions",
         "users": "users",
         "views": "views",
+        "events": "events",
     }
+    # 哪些指标来自 GA——决定 only_fetched 该看 ga_ok 还是 gsc_ok。
+    # 单独列成常量而不是内联判断：漏掉一个新指标的话，它会被错误地按
+    # gsc_ok 过滤，于是"GA 事件数 ≥ N"会把根本没拉到 GA 的站点算进来。
+    GA_COLUMNS = frozenset({"sessions", "users", "views", "bounce_rate", "events"})
 
     def traffic_rank(
         self,
@@ -523,7 +541,7 @@ class Store:
 
         if only_fetched:
             # GA 指标看 ga_ok，GSC 指标看 gsc_ok
-            where.append("ga_ok = 1" if col in ("sessions", "users", "views") else "gsc_ok = 1")
+            where.append("ga_ok = 1" if col in self.GA_COLUMNS else "gsc_ok = 1")
 
         if value is not None:
             if op == "gte":
