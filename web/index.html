@@ -1777,7 +1777,8 @@ function renderGaBanner(r){
       + '<code>Google Analytics Admin API</code>。';
     el.className = 'banner warn';
   } else if(!r.ga_mapped){
-    el.innerHTML = 'GA 权限已就绪，但还没配置站点与 GA4 属性的对应关系。'
+    el.innerHTML = 'GA 权限已就绪，但<b>还没告诉本工具每个站点该读哪个 GA4 属性</b>。'
+      + '（装了跟踪代码不代表本工具知道读哪个属性——这份对应关系存在本地。）'
       + '点上面的「自动匹配 GA 属性」即可，不用手抄 ID。';
     el.className = 'banner warn';
   } else if((r.ga_unmapped || []).length){
@@ -1785,11 +1786,22 @@ function renderGaBanner(r){
        剩下那个站点的 GA 列会一直是空白，而空白跟"真的没流量"长得一样，
        用户根本不会想到是没配属性。 */
     const u = r.ga_unmapped;
-    el.innerHTML = `⚠️ 本表 ${S.traffic.length} 个站点里有 <b>${u.length} 个没有配 GA4 属性</b>，`
-      + `它们的 GA 各列<b>会一直是空白</b>，不是真的没流量：`
+    /* 文案必须说清是"本工具的本地对应关系没覆盖"，不能写成"没有配 GA4 属性"。
+       后者会被读成"你没装 GA4"，而实际最常见的情况恰恰相反：GA4 装好了、
+       属性也建好了，只是新增站点之后没有重新匹配过——这份对应关系存在本地
+       config.json 里，不会自己更新。写错一个词，用户就会去 GA 后台白找一圈。 */
+    el.innerHTML = `⚠️ 本表 ${S.traffic.length} 个站点里，有 <b>${u.length} 个还没告诉本工具`
+      + `该读哪个 GA4 属性</b>，所以它们的 GA 各列<b>会一直是空白</b>，不是真的没流量：`
       + `<br>${u.slice(0,8).map(esc).join('、')}${u.length > 8 ? ` …… 等 ${u.length} 个` : ''}`
-      + `<br>点上面的「自动匹配 GA 属性」，配对结果页会逐个说明原因和怎么改。`;
+      + `<br><b>装了 GA4 跟踪代码 ≠ 本工具知道读哪个属性。</b>`
+      + `站点↔属性的对应关系存在本地，<b>新增站点后要重新匹配一次</b>。`
+      + `<br><button class="btn sm primary" id="gaFixNow">立即自动匹配</button>`
+      + `<span class="hint">　匹配完会列出每一条的结果，确认后点「保存这份对应关系」</span>`;
     el.className = 'banner err';
+    setTimeout(() => {
+      const b = $('#gaFixNow');
+      if(b) b.onclick = () => $('#btnGaDiscover').click();
+    }, 0);
   } else {
     el.classList.add('hide');
     return;
@@ -1922,7 +1934,8 @@ function renderTraffic(r, filtered){
     $('#trCount').innerHTML = `<b>其中 ${stale.length} 个站点的「今日」数据是之前某天拉的</b>，`
       + '不是今天的——今日窗口隔夜就失效了，重新点「拉取全部站点」。';
   } else $('#trCount').textContent = rows.length
-    ? `GSC 数据截止到 2~3 天前（Google 自身延迟）。GA 那两列为空说明还没授权或还没配属性。` : '';
+    ? `GSC 数据截止到 2~3 天前（Google 自身延迟）。GA 各列为空说明还没授权，`
+      + `或者本工具还不知道该读哪个 GA4 属性（新增站点后要重新匹配一次）。` : '';
 
   $$('#trBody [data-tr-go]').forEach(b => b.onclick = () => {
     ensureSiteOption(b.dataset.trGo);
@@ -2000,7 +2013,8 @@ function renderRealtime(r){
     </table></div></div>` : `
     <p class="hint" style="margin:8px 0 0">这些站点最近 30 分钟都没有活跃用户。</p>`)
     + (r.unmapped && r.unmapped.length ? `<p class="hint" style="margin:8px 0 0">`
-      + `${r.unmapped.length} 个站点还没配 GA4 属性，查不了实时——点上面「自动匹配 GA 属性」。</p>` : '')
+      + `${r.unmapped.length} 个站点还没告诉本工具该读哪个 GA4 属性，查不了实时`
+      + `——新增站点后要重新点一次上面的「自动匹配 GA 属性」。</p>` : '')
     + (bad.length ? `<p class="hint" style="margin:6px 0 0">失败：`
       + esc(bad.map(x => x.site + '（' + (x.message || '未知') + '）').join('；')) + '</p>' : '');
 }
