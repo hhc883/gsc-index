@@ -145,18 +145,37 @@ class OAuthCredential(Credential):
         self._data = data
 
     def _build(self):
+        # 刷新 token 必须用**这份凭据当初实际获得**的权限范围，不能用代码里的
+        # oauth.SCOPES。否则一旦给 SCOPES 加了新权限（比如后来加的 analytics），
+        # 所有老凭据刷新时都会被 Google 以 invalid_scope 拒绝，
+        # 连原本能用的功能（查站点、查收录）也一起失效。
+        # 老凭据文件里没存 scopes 字段，退回 webmasters 基础集——那是它们
+        # 当初唯一申请过的权限。
+        scopes = self._data.get("scopes") or [oauth.SCOPE_WEBMASTERS]
         return UserCredentials(
             token=None,
             refresh_token=self._data["refresh_token"],
             client_id=self._data["client_id"],
             client_secret=self._data["client_secret"],
             token_uri=oauth.TOKEN_ENDPOINT,
-            scopes=oauth.SCOPES,
+            scopes=scopes,
         )
 
     @property
     def refresh_token(self) -> str:
         return self._data.get("refresh_token", "")
+
+    @property
+    def scopes(self) -> list[str]:
+        return list(self._data.get("scopes") or [oauth.SCOPE_WEBMASTERS])
+
+    def has_scope(self, scope: str) -> bool:
+        """这份凭据当初有没有拿到某个权限。
+
+        界面上据此判断"要不要提示用户重新授权才能用 GA"，
+        而不是等到真正调用 API 时才报一个看不懂的错。
+        """
+        return scope in self.scopes
 
 
 # 兼容旧名字

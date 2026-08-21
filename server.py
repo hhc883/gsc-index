@@ -506,6 +506,112 @@ def api_links(
     }
 
 
+@app.get("/api/traffic")
+def api_traffic(
+    window_days: int = 0,
+    metric: str = "impressions",
+    op: str = "gte",
+    value: float | None = None,
+    value2: float | None = None,
+    include_unfetched: bool = False,
+):
+    """流量排行与筛选。
+
+    「哪些站流量过 1000」就是这个接口：metric=impressions&op=gte&value=1000。
+    两边的 Google 接口都不支持按指标筛（只支持按维度），所以筛选在本地做——
+    数据缓存下来之后筛选是瞬时的，阈值随便改、条件能任意组合。
+    """
+    w = window_days or cfg.traffic_window_days
+    try:
+        rows = store.traffic_rank(
+            w, metric=metric, op=op, value=value, value2=value2,
+            only_fetched=not include_unfetched,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return {
+        "rows": rows,
+        "window_days": w,
+        "analytics": engine.analytics_ready(),
+        "ga_mapped": len(cfg.ga_property_map or {}),
+    }
+
+
+@app.get("/api/traffic/site")
+def api_traffic_site(site_url: str = "", window_days: int = 0):
+    """单站点详情：总量 + 按天趋势 + 页面明细 + 搜索词。"""
+    site = site_url or cfg.site_url
+    w = window_days or cfg.traffic_window_days
+    return {
+        "site_url": site,
+        "window_days": w,
+        "totals": store.traffic_row(site, w),
+        "daily": store.daily_series_traffic(site, w),
+        "pages": store.page_traffic_list(site, w)[:300],
+        "queries": store.query_traffic_list(site, w, limit=200),
+    }
+
+
+@app.get("/api/traffic/links")
+def api_traffic_links(site_url: str = "", window_days: int = 0):
+    """链接清单 + 流量，用来找"已收录但零展现"的页面。"""
+    site = site_url or cfg.site_url
+    w = window_days or cfg.traffic_window_days
+    return {"rows": store.links_with_traffic(site, w), "window_days": w}
+
+
+@app.post("/api/traffic/refresh")
+def api_traffic_refresh(body: dict = Body(...)):
+    """拉取流量数据。不传 sites 就拉全部站点（79 个约需几分钟）。"""
+    sites = body.get("sites")
+    w = int(body.get("window_days") or cfg.traffic_window_days)
+    account = (body.get("account") or "").strip()
+    detail = bool(body.get("with_detail"))
+
+    def run(emit, _stop):
+        return engine.traffic_refresh(
+            sites, window_days=w, account_name=account, with_detail=detail, emit=emit
+        )
+
+    return {"job_id": start_job("traffic", run).id}
+
+
+@app.post("/api/ga/discover")
+def api_ga_discover(body: dict = Body(...)):
+    """自动发现 GA4 媒体资源并跟站点配对。
+
+    靠数据流里绑定的真实网站地址来配，不用手抄几十个媒体资源 ID。
+    """
+    account = (body.get("account") or "").strip()
+
+    def run(emit, _stop):
+        return engine.ga_discover(account_name=account, emit=emit)
+
+    return {"job_id": start_job("ga_discover", run).id}
+
+
+@app.post("/api/ga/mapping")
+def api_ga_mapping(body: dict = Body(...)):
+    """保存站点与 GA4 属性的对应关系。"""
+    mapping = body.get("mapping")
+    if not isinstance(mapping, dict):
+        return JSONResponse({"error": "mapping 必须是对象"}, status_code=400)
+    # 只留纯数字的媒体资源 ID。跟踪代码里的 G-XXXXXXXXXX 是"衡量 ID"，
+    # 调 Data API 用它必然失败，这里直接拦掉免得用户白等一轮报错。
+    clean, rejected = {}, []
+    for site, pid in mapping.items():
+        pid = str(pid).strip()
+        if not pid:
+            continue
+        if pid.isdigit():
+            clean[site] = pid
+        else:
+            rejected.append({"site": site, "value": pid})
+    cfg.ga_property_map = clean
+    cfg.save()
+    return {"ok": True, "saved": len(clean), "rejected": rejected}
+
+
 @app.post("/api/recheck")
 def api_recheck(body: dict = Body(...)):
     """复查收录状态：重新查询这些链接现在收录了没。

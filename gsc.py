@@ -9,6 +9,8 @@
   python gsc.py links --state indexed                       只看已收录的
   python gsc.py request --limit 2                           挑几条未收录的去网页申请
   python gsc.py recheck                                     复查申请过的现在收录了没
+  python gsc.py traffic --refresh                           拉取并显示流量排行
+  python gsc.py traffic --metric impressions --min 1000     筛出展现量过 1000 的站点
   python gsc.py inspect --file urls.txt                     只查收录状态
   python gsc.py sitemap --submit https://a.com/sitemap.xml  提交站点地图
   python gsc.py stats                                       看统计
@@ -225,6 +227,49 @@ def cmd_stats(args) -> None:
         print(f"  {d['d']}  成功 {d['ok']:>4}  失败 {d['fail']:>4}")
 
 
+def cmd_traffic(args) -> None:
+    """流量排行与筛选。--min/--max 就是"筛出流量达标的站点"。"""
+    cfg, store, engine = build(args)
+    w = args.window or cfg.traffic_window_days
+
+    if args.refresh:
+        sites = [args.site] if args.site else None
+        res = engine.traffic_refresh(sites, window_days=w, emit=emit)
+        if res.get("error"):
+            sys.exit("拉取失败：" + res["error"])
+        print()
+
+    op, val, val2 = "gte", None, None
+    if args.min is not None and args.max is not None:
+        op, val, val2 = "between", args.min, args.max
+    elif args.min is not None:
+        op, val = "gte", args.min
+    elif args.max is not None:
+        op, val = "lte", args.max
+
+    try:
+        rows = store.traffic_rank(w, metric=args.metric, op=op, value=val, value2=val2)
+    except ValueError as exc:
+        sys.exit(str(exc))
+
+    cond = ""
+    if val is not None:
+        cond = f"（{args.metric} " + (f"{val}~{val2}" if val2 is not None
+                                     else ("≥" if op == "gte" else "≤") + str(val)) + "）"
+    print()
+    print(f"近 {w} 天流量排行{cond}，命中 {len(rows)} 个站点：")
+    print()
+    print(f"  {'站点':<36} {'展现':>7} {'点击':>6} {'排名':>7} {'GA会话':>8}")
+    for r in rows[: args.limit]:
+        ga = str(r["sessions"]) if r["ga_ok"] else "-"
+        print(f"  {r['site']:<36} {r['impressions'] or 0:>7} {r['clicks'] or 0:>6}"
+              f" {(r['position'] or 0):>7.1f} {ga:>8}")
+    if len(rows) > args.limit:
+        print(f"  …… 其余 {len(rows) - args.limit} 个")
+    print()
+    print("注：GSC 数据截止到 2~3 天前（Google 自身延迟）；GA 列为 - 表示还没授权或还没配属性。")
+
+
 def cmd_serve(args) -> None:
     import server
 
@@ -267,6 +312,17 @@ def main() -> None:
     m = sub.add_parser("sitemap", help="站点地图管理")
     m.add_argument("--submit", help="提交站点地图给 GSC")
     m.set_defaults(fn=cmd_sitemap)
+
+    tr = sub.add_parser("traffic", help="流量排行与筛选（GSC 展现/点击 + GA 会话）")
+    tr.add_argument("--refresh", action="store_true", help="先拉取最新数据再显示")
+    tr.add_argument("--window", type=int, help="统计窗口天数，默认取配置值")
+    tr.add_argument("--metric", default="impressions",
+                    choices=["impressions", "clicks", "position", "sessions", "users", "views"],
+                    help="排序/筛选用的指标")
+    tr.add_argument("--min", type=float, help="下限，比如 --min 1000")
+    tr.add_argument("--max", type=float, help="上限；跟 --min 同时给就是区间")
+    tr.add_argument("--limit", type=int, default=40, help="显示条数")
+    tr.set_defaults(fn=cmd_traffic)
 
     sub.add_parser("stats", help="查看统计").set_defaults(fn=cmd_stats)
     sub.add_parser("serve", help="启动网页界面").set_defaults(fn=cmd_serve)

@@ -12,7 +12,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
-from . import api, sources, webauto
+from . import api, oauth, sources, traffic, webauto
 from .auth import KIND_OAUTH, AccountPool, AuthError
 from .config import Config
 from .store import Store
@@ -701,6 +701,255 @@ class Engine:
             "checked": len(res["rows"]), "newly_indexed": newly_indexed,
             "still_not": still_not, "unknown": unknown,
         }
+
+    # ------------------------------------------------------------------
+    # 流量数据（GSC Search Analytics + GA4）
+    # ------------------------------------------------------------------
+
+    def _traffic_token(self, account_name: str = "", need_analytics: bool = False):
+        """挑一个能用的凭据取 token。
+
+        need_analytics=True 时只认拿到过 analytics 权限的凭据——老凭据没有这个
+        权限，硬拿去调 GA 会被 Google 拒，不如提前说清楚要重新授权。
+        """
+        cands = self.pool.accounts
+        if account_name:
+            acc = self.pool.by_name(account_name)
+            cands = [acc] if acc else []
+        for acc in cands:
+            if acc.kind != KIND_OAUTH:
+                continue  # 服务账号拿不到 GA 数据，GSC 流量也走 OAuth 更省事
+            if need_analytics and not getattr(acc, "has_scope", lambda _s: False)(
+                oauth.SCOPE_ANALYTICS
+            ):
+                continue
+            try:
+                return acc, acc.token()
+            except AuthError:
+                continue
+        return None, None
+
+    def analytics_ready(self) -> dict:
+        """GA 是否可用。界面据此提示"需要重新授权"，而不是等调用失败才报错。"""
+        oauth_accs = [a for a in self.pool.accounts if a.kind == KIND_OAUTH]
+        with_ga = [
+            a for a in oauth_accs
+            if getattr(a, "has_scope", lambda _s: False)(oauth.SCOPE_ANALYTICS)
+        ]
+        return {
+            "has_oauth": bool(oauth_accs),
+            "ga_ready": bool(with_ga),
+            "accounts_with_ga": [a.name for a in with_ga],
+            "accounts_without_ga": [a.name for a in oauth_accs if a not in with_ga],
+        }
+
+    def ga_discover(self, *, account_name: str = "", emit: Emit = _noop) -> dict:
+        """列出账号下全部 GA4 属性，并自动跟 GSC 站点配对。
+
+        为什么能自动配：GA4 的数据流里存着这个属性实际绑定的网站地址，
+        拿它跟 GSC 属性比主机名就能对上，比让用户手抄几十个媒体资源 ID 靠谱得多。
+        （注意跟踪代码里的 G-XXXXXXXXXX 是"衡量 ID"，不能用来调 Data API，
+        调 API 要的是纯数字的"媒体资源 ID"——这是最常见的坑。）
+        """
+        acc, token = self._traffic_token(account_name, need_analytics=True)
+        if not token:
+            msg = ("没有拿到 GA 权限的凭据。请到「账号管理」重新授权一次——"
+                   "新增了读取 GA 数据的权限，必须重新走一遍授权流程。")
+            emit({"type": "log", "level": "error", "message": msg})
+            return {"error": msg, "properties": [], "mapping": {}}
+
+        emit({"type": "log", "level": "info", "message": "正在列出 GA4 媒体资源…"})
+        ok, props, err = traffic.ga_list_properties(token, timeout=self.cfg.request_timeout)
+        if not ok:
+            emit({"type": "log", "level": "error", "message": "读取失败：" + err})
+            return {"error": err, "properties": [], "mapping": {}}
+        if not props:
+            msg = "这个 Google 账号下没有任何 GA4 媒体资源"
+            emit({"type": "log", "level": "warn", "message": msg})
+            return {"error": msg, "properties": [], "mapping": {}}
+
+        emit({"type": "log", "level": "success",
+              "message": f"找到 {len(props)} 个 GA4 媒体资源，正在读取各自绑定的网站地址…"})
+        emit({"type": "progress", "phase": "ga_discover", "done": 0, "total": len(props)})
+
+        # 数据流要逐个属性查，属性多时较慢，所以并发拉
+        def fill(prop):
+            ok2, uris, mids, _err = traffic.ga_property_streams(
+                token, prop.property_id, timeout=self.cfg.request_timeout
+            )
+            if ok2:
+                prop.stream_uris = uris
+                prop.measurement_ids = mids
+            return prop
+
+        done = 0
+        with ThreadPoolExecutor(max_workers=max(1, self.cfg.concurrency)) as ex:
+            for _ in as_completed([ex.submit(fill, p) for p in props]):
+                done += 1
+                if done % 5 == 0 or done == len(props):
+                    emit({"type": "progress", "phase": "ga_discover",
+                          "done": done, "total": len(props)})
+
+        sites = [s["site_url"] for s in self.all_sites(account_name=account_name)]
+        mapping, unmatched_props, unmatched_sites = traffic.ga_match_sites(props, sites)
+
+        emit({"type": "log", "level": "success",
+              "message": f"自动配对成功 {len(mapping)} 个站点"
+                         + (f"，{len(unmatched_sites)} 个站点没找到对应属性" if unmatched_sites else "")
+                         + (f"，{len(unmatched_props)} 个属性没配上站点" if unmatched_props else "")})
+
+        return {
+            "properties": [
+                {
+                    "property_id": p.property_id,
+                    "display_name": p.display_name,
+                    "account_name": p.account_name,
+                    "stream_uris": p.stream_uris,
+                    "measurement_ids": p.measurement_ids,
+                }
+                for p in props
+            ],
+            "mapping": mapping,
+            "unmatched_sites": unmatched_sites,
+            "unmatched_properties": [p.property_id for p in unmatched_props],
+        }
+
+    def traffic_refresh(
+        self,
+        sites: list[str] | None = None,
+        *,
+        window_days: int = 28,
+        account_name: str = "",
+        with_detail: bool = False,
+        emit: Emit = _noop,
+    ) -> dict:
+        """拉取流量数据并缓存到本地。
+
+        为什么必须先拉后筛：GSC 和 GA 的接口都只支持按维度筛（页面、查询词…），
+        **不支持按指标筛**——没法跟 Google 说"把点击量大于 1000 的站点给我"。
+        所以只能逐站点拉总量、存本地，再在本地任意筛选排序。
+        好处是筛选瞬时、阈值随便改、条件能任意组合。
+
+        with_detail=True 时额外拉按页面/搜索词/按天的明细（请求量大得多，
+        适合只对单个站点用）。
+        """
+        if sites is None:
+            sites = [s["site_url"] for s in self.all_sites(account_name=account_name)]
+        if not sites:
+            emit({"type": "log", "level": "error", "message": "没有可用的站点"})
+            return {"error": "没有可用的站点", "updated": 0}
+
+        acc, token = self._traffic_token(account_name)
+        if not token:
+            msg = "没有可用的 OAuth 凭据，请先到「账号管理」完成 OAuth 登录"
+            emit({"type": "log", "level": "error", "message": msg})
+            return {"error": msg, "updated": 0}
+
+        ga_ready = acc is not None and getattr(acc, "has_scope", lambda _s: False)(
+            oauth.SCOPE_ANALYTICS
+        )
+        ga_map = self.cfg.ga_property_map or {}
+        if not ga_ready:
+            emit({"type": "log", "level": "warn",
+                  "message": "当前凭据没有 GA 权限，本次只拉 GSC 流量。"
+                             "想要 GA 数据请到「账号管理」重新授权一次。"})
+        elif not ga_map:
+            emit({"type": "log", "level": "warn",
+                  "message": "还没配置站点与 GA4 属性的对应关系，本次只拉 GSC 流量。"
+                             "可以到「流量数据」页点「自动匹配 GA 属性」。"})
+
+        total = len(sites)
+        emit({"type": "log", "level": "info",
+              "message": f"开始拉取 {total} 个站点近 {window_days} 天的流量"
+                         f"（GSC 数据有 2~3 天延迟，窗口已相应前移）"})
+        emit({"type": "progress", "phase": "traffic", "done": 0, "total": total})
+
+        stats = {"done": 0, "gsc_ok": 0, "ga_ok": 0, "failed": 0}
+
+        def pull(site: str):
+            gsc = traffic.gsc_totals(token, site, days=window_days,
+                                     timeout=self.cfg.request_timeout)
+            ga = None
+            pid = ga_map.get(site, "")
+            if ga_ready and pid:
+                ga = traffic.ga_totals(token, pid, days=window_days,
+                                       timeout=self.cfg.request_timeout)
+            return site, gsc, ga, pid
+
+        with ThreadPoolExecutor(max_workers=max(1, self.cfg.concurrency)) as ex:
+            for fut in as_completed([ex.submit(pull, s) for s in sites]):
+                site, gsc, ga, pid = fut.result()
+                self.store.traffic_upsert(site, window_days, gsc=gsc, ga=ga, ga_property=pid)
+                stats["done"] += 1
+                if gsc.ok:
+                    stats["gsc_ok"] += 1
+                else:
+                    stats["failed"] += 1
+                    emit({"type": "log", "level": "error",
+                          "message": f"{site} GSC 拉取失败：{gsc.message[:90]}"})
+                if ga is not None:
+                    if ga.ok:
+                        stats["ga_ok"] += 1
+                    else:
+                        emit({"type": "log", "level": "error",
+                              "message": f"{site} GA 拉取失败：{ga.message[:90]}"})
+                emit({"type": "progress", "phase": "traffic",
+                      "done": stats["done"], "total": total})
+
+        # 明细只对少量站点拉——按页面/搜索词拆分的响应比总量大得多
+        if with_detail:
+            for site in sites[:5]:
+                self._traffic_detail(token, site, window_days, ga_map.get(site, ""),
+                                     ga_ready, emit)
+
+        emit({"type": "log", "level": "success",
+              "message": f"完成：GSC 成功 {stats['gsc_ok']}/{total}"
+                         + (f"，GA 成功 {stats['ga_ok']}" if ga_ready and ga_map else "")})
+        return {"updated": stats["done"], "gsc_ok": stats["gsc_ok"],
+                "ga_ok": stats["ga_ok"], "failed": stats["failed"],
+                "window_days": window_days}
+
+    def _traffic_detail(self, token, site, window_days, pid, ga_ready, emit) -> None:
+        """拉单个站点的页面/搜索词/按天明细。"""
+        ok, pages, err = traffic.gsc_breakdown(
+            token, site, "page", window_days, timeout=self.cfg.request_timeout
+        )
+        if ok:
+            for row in pages:
+                self.store.page_traffic_upsert(site, row["key"], window_days, row)
+            emit({"type": "log", "level": "info",
+                  "message": f"{site} 页面明细 {len(pages)} 条"})
+        elif err:
+            emit({"type": "log", "level": "warn", "message": f"{site} 页面明细失败：{err[:80]}"})
+
+        ok, queries, err = traffic.gsc_breakdown(
+            token, site, "query", window_days, timeout=self.cfg.request_timeout
+        )
+        if ok:
+            for row in queries:
+                self.store.query_traffic_upsert(site, row["key"], window_days, row)
+            emit({"type": "log", "level": "info",
+                  "message": f"{site} 搜索词 {len(queries)} 条"})
+
+        ok, daily, err = traffic.gsc_daily(
+            token, site, window_days, timeout=self.cfg.request_timeout
+        )
+        if ok:
+            for row in daily:
+                self.store.daily_upsert(site, row["date"],
+                                        impressions=row["impressions"], clicks=row["clicks"])
+
+        if ga_ready and pid:
+            ok, garows, err = traffic.ga_breakdown(
+                token, pid, "date", window_days, timeout=self.cfg.request_timeout
+            )
+            if ok:
+                for row in garows:
+                    d = row["key"]
+                    if len(d) == 8:   # GA 返回 YYYYMMDD，转成 YYYY-MM-DD 跟 GSC 对齐
+                        d = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+                    self.store.daily_upsert(site, d,
+                                            sessions=row["sessions"], users=row["users"])
 
     # ------------------------------------------------------------------
     # 站点地图

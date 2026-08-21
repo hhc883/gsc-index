@@ -11,6 +11,12 @@
 * quota       —— 按天计的 API 配额（收录查询）
 * webauto_day —— 每个站点每天点了几次"请求编入索引"
 * log         —— 操作流水，source 区分是旧的 Indexing API 还是网页自动化
+* site_traffic   —— 每个站点每个时间窗口的流量总量（GSC 展现/点击 + GA 会话/用户）。
+                    gsc_ok / ga_ok 是必要的标志位：得能区分"真的 0 流量"和
+                    "这次没拉到"，否则筛"零流量站点"会把请求失败的混进来。
+* traffic_daily  —— 按天的趋势数据
+* page_traffic   —— 按页面拆分，跟 site_urls 连接后能找出"已收录但零展现"的页面
+* query_traffic  —— 按搜索词拆分，这是 GSC 独有、GA 看不到的数据
 """
 
 from __future__ import annotations
@@ -67,6 +73,59 @@ CREATE TABLE IF NOT EXISTS webauto_day (
     day  TEXT NOT NULL,
     used INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (site, day)
+);
+CREATE TABLE IF NOT EXISTS site_traffic (
+    site        TEXT NOT NULL,
+    window_days INTEGER NOT NULL,   -- 7 / 28 / 90，不同窗口分开存
+    -- GSC Search Analytics
+    impressions INTEGER,
+    clicks      INTEGER,
+    ctr         REAL,
+    position    REAL,
+    gsc_ok      INTEGER NOT NULL DEFAULT 0,   -- 0 表示这次没拉到（区别于真的是 0 流量）
+    gsc_msg     TEXT,
+    -- GA4
+    ga_property TEXT,
+    sessions    INTEGER,
+    users       INTEGER,
+    views       INTEGER,
+    bounce_rate REAL,
+    ga_ok       INTEGER NOT NULL DEFAULT 0,
+    ga_msg      TEXT,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (site, window_days)
+);
+CREATE TABLE IF NOT EXISTS traffic_daily (
+    site        TEXT NOT NULL,
+    day         TEXT NOT NULL,
+    impressions INTEGER,
+    clicks      INTEGER,
+    sessions    INTEGER,
+    users       INTEGER,
+    PRIMARY KEY (site, day)
+);
+CREATE TABLE IF NOT EXISTS page_traffic (
+    site        TEXT NOT NULL,
+    url         TEXT NOT NULL,
+    window_days INTEGER NOT NULL,
+    impressions INTEGER,
+    clicks      INTEGER,
+    ctr         REAL,
+    position    REAL,
+    sessions    INTEGER,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (site, url, window_days)
+);
+CREATE TABLE IF NOT EXISTS query_traffic (
+    site        TEXT NOT NULL,
+    query       TEXT NOT NULL,
+    window_days INTEGER NOT NULL,
+    impressions INTEGER,
+    clicks      INTEGER,
+    ctr         REAL,
+    position    REAL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (site, query, window_days)
 );
 CREATE INDEX IF NOT EXISTS idx_log_ts ON log(ts);
 CREATE INDEX IF NOT EXISTS idx_urls_submitted ON urls(last_submitted);
@@ -372,6 +431,227 @@ class Store:
                 params,
             ).fetchall()
         return [r["url"] for r in rows]
+
+    # ---------- 流量数据 ----------
+
+    def traffic_upsert(self, site: str, window_days: int, gsc=None, ga=None,
+                       ga_property: str = "") -> None:
+        """写入/更新一个站点某个窗口的流量总量。
+
+        gsc / ga 是 traffic 模块的 GscTotals / GaTotals，任一为 None 表示这次没拉。
+        gsc_ok / ga_ok 单独存一个标志位——必须能区分"真的是 0 流量"和"这次没拉到"，
+        否则筛选"流量 0 的站点"会把请求失败的也算进来，得出错误结论。
+        """
+        now = _now()
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO site_traffic
+                     (site, window_days, impressions, clicks, ctr, position, gsc_ok, gsc_msg,
+                      ga_property, sessions, users, views, bounce_rate, ga_ok, ga_msg, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(site, window_days) DO UPDATE SET
+                     impressions = COALESCE(excluded.impressions, site_traffic.impressions),
+                     clicks      = COALESCE(excluded.clicks,      site_traffic.clicks),
+                     ctr         = COALESCE(excluded.ctr,         site_traffic.ctr),
+                     position    = COALESCE(excluded.position,    site_traffic.position),
+                     gsc_ok      = MAX(excluded.gsc_ok,           site_traffic.gsc_ok),
+                     gsc_msg     = COALESCE(excluded.gsc_msg,     site_traffic.gsc_msg),
+                     ga_property = COALESCE(NULLIF(excluded.ga_property,''), site_traffic.ga_property),
+                     sessions    = COALESCE(excluded.sessions,    site_traffic.sessions),
+                     users       = COALESCE(excluded.users,       site_traffic.users),
+                     views       = COALESCE(excluded.views,       site_traffic.views),
+                     bounce_rate = COALESCE(excluded.bounce_rate, site_traffic.bounce_rate),
+                     ga_ok       = MAX(excluded.ga_ok,            site_traffic.ga_ok),
+                     ga_msg      = COALESCE(excluded.ga_msg,      site_traffic.ga_msg),
+                     updated_at  = excluded.updated_at""",
+                (
+                    site, window_days,
+                    gsc.impressions if gsc else None,
+                    gsc.clicks if gsc else None,
+                    gsc.ctr if gsc else None,
+                    gsc.position if gsc else None,
+                    1 if (gsc and gsc.ok) else 0,
+                    gsc.message if gsc else None,
+                    ga_property,
+                    ga.sessions if ga else None,
+                    ga.users if ga else None,
+                    ga.views if ga else None,
+                    ga.bounce_rate if ga else None,
+                    1 if (ga and ga.ok) else 0,
+                    ga.message if ga else None,
+                    now,
+                ),
+            )
+            self.conn.commit()
+
+    # 允许筛选的指标白名单。绝不能把用户传来的字段名直接拼进 SQL，
+    # 这里用白名单做映射，从根上避免注入。
+    TRAFFIC_METRICS = {
+        "impressions": "impressions",
+        "clicks": "clicks",
+        "position": "position",
+        "sessions": "sessions",
+        "users": "users",
+        "views": "views",
+    }
+
+    def traffic_rank(
+        self,
+        window_days: int = 28,
+        metric: str = "impressions",
+        op: str = "gte",
+        value: float | None = None,
+        value2: float | None = None,
+        *,
+        only_fetched: bool = True,
+    ) -> list[dict]:
+        """按指标筛选并排序站点——"哪些站流量过 1000"就是这个方法。
+
+        两边的 API 都不支持按指标筛（只能按维度），所以筛选必须在本地做：
+        先把每个站点的总量拉下来缓存，再在这里查。好处是筛选瞬时、
+        阈值随便改、条件能任意组合。
+
+        only_fetched 默认为 True：只算真正拉到过数据的站点。
+        否则"从没拉过"的站点会以 0 混进"流量为 0"的结果里，把人误导。
+        """
+        col = self.TRAFFIC_METRICS.get(metric)
+        if not col:
+            raise ValueError("不支持的指标：" + str(metric))
+
+        where = ["window_days = ?"]
+        params: list = [window_days]
+
+        if only_fetched:
+            # GA 指标看 ga_ok，GSC 指标看 gsc_ok
+            where.append("ga_ok = 1" if col in ("sessions", "users", "views") else "gsc_ok = 1")
+
+        if value is not None:
+            if op == "gte":
+                where.append(f"{col} >= ?")
+                params.append(value)
+            elif op == "lte":
+                where.append(f"{col} <= ?")
+                params.append(value)
+            elif op == "between" and value2 is not None:
+                where.append(f"{col} BETWEEN ? AND ?")
+                params += [value, value2]
+            else:
+                raise ValueError("不支持的比较方式：" + str(op))
+
+        # position（平均排名）越小越好，所以升序；其余指标降序
+        order = f"{col} ASC" if col == "position" else f"{col} DESC"
+        sql = (
+            "SELECT * FROM site_traffic WHERE " + " AND ".join(where)
+            + f" ORDER BY {order}"
+        )
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def traffic_row(self, site: str, window_days: int = 28) -> dict | None:
+        with self._lock:
+            r = self.conn.execute(
+                "SELECT * FROM site_traffic WHERE site = ? AND window_days = ?",
+                (site, window_days),
+            ).fetchone()
+        return dict(r) if r else None
+
+    def daily_upsert(self, site: str, day: str, *, impressions=None, clicks=None,
+                     sessions=None, users=None) -> None:
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO traffic_daily (site, day, impressions, clicks, sessions, users)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(site, day) DO UPDATE SET
+                     impressions = COALESCE(excluded.impressions, traffic_daily.impressions),
+                     clicks      = COALESCE(excluded.clicks,      traffic_daily.clicks),
+                     sessions    = COALESCE(excluded.sessions,    traffic_daily.sessions),
+                     users       = COALESCE(excluded.users,       traffic_daily.users)""",
+                (site, day, impressions, clicks, sessions, users),
+            )
+            self.conn.commit()
+
+    def daily_series_traffic(self, site: str, days: int = 28) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM traffic_daily WHERE site = ? ORDER BY day DESC LIMIT ?",
+                (site, days),
+            ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    def page_traffic_upsert(self, site: str, url: str, window_days: int, row: dict) -> None:
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO page_traffic
+                     (site, url, window_days, impressions, clicks, ctr, position, sessions, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(site, url, window_days) DO UPDATE SET
+                     impressions = COALESCE(excluded.impressions, page_traffic.impressions),
+                     clicks      = COALESCE(excluded.clicks,      page_traffic.clicks),
+                     ctr         = COALESCE(excluded.ctr,         page_traffic.ctr),
+                     position    = COALESCE(excluded.position,    page_traffic.position),
+                     sessions    = COALESCE(excluded.sessions,    page_traffic.sessions),
+                     updated_at  = excluded.updated_at""",
+                (site, url, window_days, row.get("impressions"), row.get("clicks"),
+                 row.get("ctr"), row.get("position"), row.get("sessions"), _now()),
+            )
+            self.conn.commit()
+
+    def query_traffic_upsert(self, site: str, query: str, window_days: int, row: dict) -> None:
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO query_traffic
+                     (site, query, window_days, impressions, clicks, ctr, position, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(site, query, window_days) DO UPDATE SET
+                     impressions = excluded.impressions,
+                     clicks      = excluded.clicks,
+                     ctr         = excluded.ctr,
+                     position    = excluded.position,
+                     updated_at  = excluded.updated_at""",
+                (site, query, window_days, row.get("impressions"), row.get("clicks"),
+                 row.get("ctr"), row.get("position"), _now()),
+            )
+            self.conn.commit()
+
+    def page_traffic_list(self, site: str, window_days: int = 28) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM page_traffic WHERE site = ? AND window_days = ? "
+                "ORDER BY impressions DESC",
+                (site, window_days),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def query_traffic_list(self, site: str, window_days: int = 28, limit: int = 200) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM query_traffic WHERE site = ? AND window_days = ? "
+                "ORDER BY impressions DESC LIMIT ?",
+                (site, window_days, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def links_with_traffic(self, site: str, window_days: int = 28) -> list[dict]:
+        """链接清单 + 流量，左连接。
+
+        用来找"已收录但零展现"的页面——这是最有指导意义的一类：
+        页面进了索引却没人搜到，说明这类内容没有搜索需求，
+        别再把稀缺的申请名额花在同类页面上。
+        """
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT s.*, p.impressions, p.clicks, p.ctr, p.position, p.sessions
+                   FROM site_urls s
+                   LEFT JOIN page_traffic p
+                     ON p.url = s.url AND p.window_days = ?
+                   WHERE s.site = ?
+                   ORDER BY
+                     CASE s.index_state WHEN 'not_indexed' THEN 0
+                                        WHEN 'unknown' THEN 1 ELSE 2 END,
+                     COALESCE(p.impressions, -1) DESC""",
+                (window_days, site),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ---------- 网页自动化的每日点击计数 ----------
 

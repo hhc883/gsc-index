@@ -224,6 +224,7 @@ ol.steps b{color:var(--text)}
 <nav><div class="tabs">
   <button class="tab on" data-p="scan">扫描与提交</button>
   <button class="tab" data-p="pending">链接清单</button>
+  <button class="tab" data-p="traffic">流量数据</button>
   <button class="tab" data-p="accounts">账号管理</button>
   <button class="tab" data-p="stats">历史统计</button>
   <button class="tab" data-p="settings">设置</button>
@@ -436,6 +437,111 @@ ol.steps b{color:var(--text)}
   </div>
 </section>
 
+<!-- ============ 流量数据 ============ -->
+<section id="p-traffic" class="hide">
+  <div class="banner warn hide" id="gaNotReady"></div>
+
+  <div class="card">
+    <h2>拉取流量数据</h2>
+    <p class="sub">
+      两边的 Google 接口都<b>只支持按维度筛选、不支持按指标筛选</b>——没法直接跟 Google 要
+      "点击量大于 1000 的站点"。所以要先逐站点把总量拉下来缓存，之后筛选就是瞬时的、
+      阈值随便改。GSC 数据有 2~3 天延迟，窗口已自动前移。
+    </p>
+    <div class="row">
+      <label class="hint">统计窗口</label>
+      <select id="trWindow">
+        <option value="7">近 7 天</option>
+        <option value="28" selected>近 28 天</option>
+        <option value="90">近 90 天</option>
+      </select>
+      <button class="btn primary" id="btnTrRefreshAll">拉取全部站点</button>
+      <button class="btn" id="btnTrRefreshOne">只拉当前站点（含明细）</button>
+      <button class="btn" id="btnGaDiscover">自动匹配 GA 属性</button>
+      <span class="hint" id="trHint"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>筛选与排行</h2>
+    <p class="sub" id="trSub">按指标筛出达标的站点。比如「GSC 展现量 ≥ 1000」。</p>
+    <div class="row" style="margin-bottom:12px">
+      <select id="fMetric">
+        <option value="impressions">GSC 展现量</option>
+        <option value="clicks">GSC 点击量</option>
+        <option value="position">GSC 平均排名</option>
+        <option value="sessions">GA 会话数</option>
+        <option value="users">GA 用户数</option>
+        <option value="views">GA 浏览量</option>
+      </select>
+      <select id="fOp">
+        <option value="gte">≥ 大于等于</option>
+        <option value="lte">≤ 小于等于</option>
+        <option value="between">区间</option>
+      </select>
+      <input type="number" id="fVal" value="1000" style="width:110px">
+      <span class="hint hide" id="fTo">~</span>
+      <input type="number" id="fVal2" value="100" style="width:110px" class="hide">
+      <button class="btn primary" id="btnFilter">筛选</button>
+      <button class="btn" id="btnFilterClear">看全部</button>
+      <div class="spacer"></div>
+      <button class="btn sm" id="expTraffic">导出 CSV</button>
+    </div>
+    <div class="row" style="margin-bottom:11px">
+      <label class="chk"><input type="checkbox" id="fUnfetched">把"还没拉取过"的站点也列出来
+        <span class="hint">默认不含——否则会以 0 混进"零流量"结果里，把人误导</span></label>
+    </div>
+    <div class="tbox"><div class="tscroll"><table>
+      <thead><tr>
+        <th>站点</th>
+        <th style="width:95px">GSC 展现</th><th style="width:90px">GSC 点击</th>
+        <th style="width:85px">点击率</th><th style="width:95px">平均排名</th>
+        <th style="width:90px">GA 会话</th><th style="width:90px">GA 用户</th>
+        <th style="width:105px">更新时间</th><th style="width:80px"></th>
+      </tr></thead>
+      <tbody id="trBody"><tr><td colspan="9"><div class="empty">先点上面「拉取全部站点」</div></td></tr></tbody>
+    </table></div></div>
+    <p class="hint" id="trCount" style="margin:9px 0 0"></p>
+  </div>
+
+  <div class="card hide" id="trSiteCard">
+    <h2>当前站点详情 <span class="hint" id="trSiteName"></span></h2>
+    <p class="sub">按天趋势、页面表现、搜索词。需要先点「只拉当前站点（含明细）」。</p>
+    <div id="trChart"></div>
+    <div class="chips" style="margin-top:14px" id="trDetailTabs">
+      <button class="chip on" data-d="pages">页面表现</button>
+      <button class="chip" data-d="queries">搜索词</button>
+      <button class="chip" data-d="zero">已收录但零展现</button>
+    </div>
+    <div class="tbox"><div class="tscroll"><table>
+      <thead id="trDetailHead"></thead>
+      <tbody id="trDetailBody"></tbody>
+    </table></div></div>
+    <p class="hint" id="trDetailNote" style="margin:9px 0 0"></p>
+  </div>
+
+  <div class="card hide" id="gaMapCard">
+    <h2>GA4 属性匹配结果</h2>
+    <p class="sub">
+      靠每个属性的<b>数据流绑定的网站地址</b>自动配对，比手抄媒体资源 ID 可靠。
+      注意跟踪代码里的 <code>G-XXXXXXXXXX</code> 是「衡量 ID」，只用于发送数据；
+      调 API 读数据要的是纯数字的「媒体资源 ID」，两者不能混用。
+    </p>
+    <div class="row" style="margin-bottom:11px">
+      <button class="btn primary" id="btnGaSave">保存这份对应关系</button>
+      <span class="hint" id="gaMapHint"></span>
+    </div>
+    <div class="tbox"><div class="tscroll"><table>
+      <thead><tr>
+        <th>GSC 站点</th><th style="width:130px">媒体资源 ID</th>
+        <th>GA 属性名称</th><th style="width:180px">数据流网址</th>
+      </tr></thead>
+      <tbody id="gaMapBody"></tbody>
+    </table></div></div>
+    <p class="hint" id="gaMapNote" style="margin:9px 0 0"></p>
+  </div>
+</section>
+
 <!-- ============ 历史统计 ============ -->
 <section id="p-stats" class="hide">
   <div class="card">
@@ -554,6 +660,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const S = {
   cfg:{}, quota:null, webauto:null, sites:[], acctFilter:'',
   pend:[], allPend:[], oauth:null, currentJob:null, recheckPending:0,
+  traffic:[], trafficWindow:28, trSite:null, trDetail:'pages', gaMap:null,
 };
 
 async function api(path, opts){
@@ -590,6 +697,7 @@ $$('.tab').forEach(t => t.onclick = () => {
   if(t.dataset.p === 'stats') loadStats();
   if(t.dataset.p === 'accounts'){ loadAccounts(); loadOauthStatus(); }
   if(t.dataset.p === 'pending') loadAllPending();
+  if(t.dataset.p === 'traffic') loadTraffic();
 });
 
 /* ---------------- 顶栏状态 ---------------- */
@@ -1249,6 +1357,282 @@ $('#btnWebLogout').onclick = async () => {
     await api('/api/webauto/login', {method:'DELETE'});
     toast('已清除浏览器登录', 'ok');
     await loadWebautoStatus();
+  }catch(e){ toast(e.message, 'err'); }
+};
+
+/* ---------------- 流量数据 ---------------- */
+const trWindow = () => Number($('#trWindow').value) || 28;
+const GA_METRICS = new Set(['sessions','users','views']);
+
+$('#fOp').onchange = () => {
+  const between = $('#fOp').value === 'between';
+  $('#fVal2').classList.toggle('hide', !between);
+  $('#fTo').classList.toggle('hide', !between);
+};
+
+async function loadTraffic(filtered){
+  try{
+    const p = new URLSearchParams({window_days: trWindow()});
+    if(filtered){
+      p.set('metric', $('#fMetric').value);
+      p.set('op', $('#fOp').value);
+      p.set('value', $('#fVal').value);
+      if($('#fOp').value === 'between') p.set('value2', $('#fVal2').value);
+    }
+    if($('#fUnfetched').checked) p.set('include_unfetched', 'true');
+    const r = await api('/api/traffic?' + p.toString());
+    S.traffic = r.rows;
+    S.trafficWindow = r.window_days;
+    renderTraffic(r, filtered);
+    renderGaBanner(r);
+  }catch(e){ toast(e.message, 'err'); }
+}
+
+function renderGaBanner(r){
+  const el = $('#gaNotReady'), a = r.analytics || {};
+  if(!a.has_oauth){
+    el.innerHTML = '还没有 OAuth 凭据。请先到「账号管理」完成 OAuth 登录。';
+    el.className = 'banner err';
+  } else if(!a.ga_ready){
+    el.innerHTML = '当前凭据<b>没有读取 GA 数据的权限</b>，所以 GA 那几列会是空的。'
+      + 'GSC 流量不受影响、已经可以用。<br>想要 GA 数据需要<b>重新授权一次</b>'
+      + '（新增了 analytics 权限，Google 要求重新走一遍授权），'
+      + '并且在 GCP 里启用 <code>Google Analytics Data API</code> 和 '
+      + '<code>Google Analytics Admin API</code>。';
+    el.className = 'banner warn';
+  } else if(!r.ga_mapped){
+    el.innerHTML = 'GA 权限已就绪，但还没配置站点与 GA4 属性的对应关系。'
+      + '点上面的「自动匹配 GA 属性」即可，不用手抄 ID。';
+    el.className = 'banner warn';
+  } else {
+    el.classList.add('hide');
+    return;
+  }
+  el.classList.remove('hide');
+}
+
+function renderTraffic(r, filtered){
+  const rows = S.traffic;
+  const metricCn = $('#fMetric').selectedOptions[0].textContent;
+  const opCn = $('#fOp').selectedOptions[0].textContent.replace(/[≥≤] /, '');
+  $('#trSub').textContent = filtered
+    ? `筛选条件：${metricCn} ${opCn} ${$('#fVal').value}`
+      + ($('#fOp').value === 'between' ? ` ~ ${$('#fVal2').value}` : '')
+      + ` · 近 ${S.trafficWindow} 天 · 命中 ${rows.length} 个站点`
+    : `近 ${S.trafficWindow} 天，共 ${rows.length} 个站点有数据。按指标筛出达标的站点，比如「GSC 展现量 ≥ 1000」。`;
+
+  $('#trBody').innerHTML = rows.length ? rows.map(x => `<tr>
+    <td class="u">${esc(x.site)}</td>
+    <td class="num">${x.gsc_ok ? (x.impressions ?? 0) : '<span class="hint">未拉取</span>'}</td>
+    <td class="num">${x.gsc_ok ? (x.clicks ?? 0) : '—'}</td>
+    <td class="num">${x.gsc_ok && x.ctr != null ? (x.ctr*100).toFixed(2) + '%' : '—'}</td>
+    <td class="num">${x.gsc_ok && x.position ? x.position.toFixed(1) : '—'}</td>
+    <td class="num">${x.ga_ok ? (x.sessions ?? 0) : '<span class="hint">—</span>'}</td>
+    <td class="num">${x.ga_ok ? (x.users ?? 0) : '—'}</td>
+    <td class="num">${x.updated_at ? esc(localDate(x.updated_at)) : '—'}</td>
+    <td><button class="btn sm" data-tr-go="${esc(x.site)}">详情</button></td>
+  </tr>`).join('') : '<tr><td colspan="9"><div class="empty">没有符合条件的站点</div></td></tr>';
+
+  $('#trCount').textContent = rows.length
+    ? `GSC 数据截止到 2~3 天前（Google 自身延迟）。GA 那两列为空说明还没授权或还没配属性。` : '';
+
+  $$('#trBody [data-tr-go]').forEach(b => b.onclick = () => {
+    ensureSiteOption(b.dataset.trGo);
+    $('#site').dispatchEvent(new Event('change'));
+    loadTrafficSite(b.dataset.trGo);
+  });
+}
+
+$('#btnFilter').onclick = () => loadTraffic(true);
+$('#btnFilterClear').onclick = () => loadTraffic(false);
+$('#fUnfetched').onchange = () => loadTraffic(false);
+$('#trWindow').onchange = () => loadTraffic(false);
+
+$('#btnTrRefreshAll').onclick = async () => {
+  const n = document.querySelectorAll('#site option').length;
+  if(!confirm(`将逐个拉取 ${n} 个站点近 ${trWindow()} 天的流量。\n`
+    + '这一步只花充裕的查询配额，不消耗申请名额。站点多的话要几分钟，继续吗？')) return;
+  try{
+    const { job_id } = await api('/api/traffic/refresh', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({window_days: trWindow(), account: S.acctFilter})});
+    $('.tab[data-p="scan"]').click();
+    watchJob(job_id, '拉取流量数据', j => {
+      const r = j.result || {};
+      toast(`完成：GSC 成功 ${r.gsc_ok||0} 个站点` + (r.ga_ok ? `，GA ${r.ga_ok} 个` : ''), 'ok');
+      $('.tab[data-p="traffic"]').click();
+    });
+  }catch(e){ toast(e.message, 'err'); }
+};
+
+$('#btnTrRefreshOne').onclick = async () => {
+  if(!site()) return toast('请先在顶部选择站点', 'err');
+  try{
+    const { job_id } = await api('/api/traffic/refresh', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sites:[site()], window_days: trWindow(),
+                            account: S.acctFilter, with_detail: true})});
+    $('.tab[data-p="scan"]').click();
+    watchJob(job_id, '拉取当前站点流量明细', () => {
+      $('.tab[data-p="traffic"]').click();
+      loadTrafficSite(site());
+    });
+  }catch(e){ toast(e.message, 'err'); }
+};
+
+async function loadTrafficSite(siteUrl){
+  try{
+    const r = await api('/api/traffic/site?window_days=' + trWindow()
+      + '&site_url=' + encodeURIComponent(siteUrl));
+    S.trSite = r;
+    $('#trSiteCard').classList.remove('hide');
+    $('#trSiteName').textContent = siteUrl;
+    $('#trChart').innerHTML = trafficChart(r.daily || []);
+    renderTrDetail();
+    $('#trSiteCard').scrollIntoView({behavior:'smooth', block:'nearest'});
+  }catch(e){ toast(e.message, 'err'); }
+}
+
+function trafficChart(daily){
+  if(!daily.length) return '<div class="empty">没有按天数据，点「只拉当前站点（含明细）」</div>';
+  const W = 100, H = 150, pad = 22;
+  const max = Math.max(1, ...daily.map(d => d.impressions || 0));
+  const bw = (W - 4) / daily.length;
+  let bars = '', labels = '', clickPts = [];
+  daily.forEach((d, i) => {
+    const x = 2 + i * bw, imp = d.impressions || 0;
+    const h = (imp / max) * (H - pad - 14);
+    if(imp) bars += `<rect x="${x+bw*0.15}" y="${H-pad-h}" width="${bw*0.7}" height="${Math.max(0.6,h)}"
+      fill="var(--accent)" opacity="0.75" rx="0.4"><title>${d.day} 展现 ${imp} · 点击 ${d.clicks||0}</title></rect>`;
+    // 点击量单独画折线：数量级通常比展现小得多，画成柱子会看不见
+    clickPts.push(`${x+bw/2},${H-pad-((d.clicks||0)/max)*(H-pad-14)}`);
+    if(i % Math.ceil(daily.length/8) === 0)
+      labels += `<text x="${x+bw/2}" y="${H-pad+8}" font-size="4" fill="var(--faint)" text-anchor="middle">${d.day.slice(5)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:230px" preserveAspectRatio="none">
+    <line x1="2" y1="${H-pad}" x2="${W-2}" y2="${H-pad}" stroke="var(--border)" stroke-width="0.4"/>
+    ${bars}
+    <polyline points="${clickPts.join(' ')}" fill="none" stroke="var(--ok)" stroke-width="0.7"/>
+    ${labels}</svg>
+    <p class="hint" style="margin:6px 0 0">柱状=展现量，绿线=点击量（同轴，点击通常远小于展现）</p>`;
+}
+
+$$('#trDetailTabs .chip').forEach(c => c.onclick = () => {
+  S.trDetail = c.dataset.d;
+  $$('#trDetailTabs .chip').forEach(x => x.classList.toggle('on', x === c));
+  renderTrDetail();
+});
+
+async function renderTrDetail(){
+  const r = S.trSite;
+  if(!r) return;
+  const head = $('#trDetailHead'), body = $('#trDetailBody');
+  if(S.trDetail === 'pages'){
+    head.innerHTML = `<tr><th>页面</th><th style="width:95px">展现</th><th style="width:85px">点击</th>
+      <th style="width:85px">点击率</th><th style="width:95px">平均排名</th></tr>`;
+    const rows = r.pages || [];
+    body.innerHTML = rows.length ? rows.map(x => `<tr>
+      <td class="u">${esc(x.url)}</td>
+      <td class="num">${x.impressions ?? 0}</td><td class="num">${x.clicks ?? 0}</td>
+      <td class="num">${x.ctr != null ? (x.ctr*100).toFixed(2)+'%' : '—'}</td>
+      <td class="num">${x.position ? x.position.toFixed(1) : '—'}</td>
+    </tr>`).join('') : '<tr><td colspan="5"><div class="empty">没有页面数据</div></td></tr>';
+    $('#trDetailNote').textContent = `共 ${rows.length} 个页面有展现`;
+  } else if(S.trDetail === 'queries'){
+    head.innerHTML = `<tr><th>搜索词</th><th style="width:95px">展现</th><th style="width:85px">点击</th>
+      <th style="width:85px">点击率</th><th style="width:95px">平均排名</th></tr>`;
+    const rows = r.queries || [];
+    body.innerHTML = rows.length ? rows.map(x => `<tr>
+      <td>${esc(x.query)}</td>
+      <td class="num">${x.impressions ?? 0}</td><td class="num">${x.clicks ?? 0}</td>
+      <td class="num">${x.ctr != null ? (x.ctr*100).toFixed(2)+'%' : '—'}</td>
+      <td class="num">${x.position ? x.position.toFixed(1) : '—'}</td>
+    </tr>`).join('') : '<tr><td colspan="5"><div class="empty">没有搜索词数据</div></td></tr>';
+    $('#trDetailNote').textContent =
+      '这是 GSC 独有的数据——别人搜什么词看到了你，GA 看不到这个。';
+  } else {
+    // 已收录但零展现：这是最有指导意义的一类
+    head.innerHTML = `<tr><th>页面</th><th style="width:120px">收录状态</th>
+      <th style="width:95px">展现</th><th style="width:85px">点击</th></tr>`;
+    try{
+      const lr = await api('/api/traffic/links?window_days=' + trWindow()
+        + '&site_url=' + encodeURIComponent(r.site_url));
+      const zero = lr.rows.filter(x => x.index_state === 'indexed' && !(x.impressions > 0));
+      body.innerHTML = zero.length ? zero.map(x => `<tr>
+        <td class="u">${esc(x.url)}</td>
+        <td><span class="pill p-ok">已收录</span></td>
+        <td class="num">${x.impressions ?? 0}</td><td class="num">${x.clicks ?? 0}</td>
+      </tr>`).join('') : '<tr><td colspan="4"><div class="empty">没有这类页面（或还没拉页面明细）</div></td></tr>';
+      $('#trDetailNote').textContent = zero.length
+        ? `${zero.length} 个页面已进索引但零展现——说明这类内容没有搜索需求，`
+          + '别再把稀缺的申请名额花在同类页面上。'
+        : '';
+    }catch(e){ toast(e.message, 'err'); }
+  }
+}
+
+$('#expTraffic').onclick = () => {
+  if(!S.traffic.length) return toast('没有可导出的数据', 'err');
+  download('站点流量.csv', toCsv(S.traffic,
+    [['站点','site'],['GSC展现','impressions'],['GSC点击','clicks'],['点击率','ctr'],
+     ['平均排名','position'],['GA会话','sessions'],['GA用户','users'],
+     ['GA浏览量','views'],['更新时间','updated_at']]));
+};
+
+/* ---------------- GA 属性自动匹配 ---------------- */
+$('#btnGaDiscover').onclick = async () => {
+  try{
+    const { job_id } = await api('/api/ga/discover', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account: S.acctFilter})});
+    $('.tab[data-p="scan"]').click();
+    watchJob(job_id, '自动匹配 GA 属性', j => {
+      const r = j.result || {};
+      $('.tab[data-p="traffic"]').click();
+      if(r.error){ toast(r.error, 'err'); return; }
+      S.gaMap = r;
+      renderGaMap(r);
+      toast(`配对成功 ${Object.keys(r.mapping||{}).length} 个站点`, 'ok');
+    });
+  }catch(e){ toast(e.message, 'err'); }
+};
+
+function renderGaMap(r){
+  $('#gaMapCard').classList.remove('hide');
+  const props = {};
+  (r.properties || []).forEach(p => props[p.property_id] = p);
+  const entries = Object.entries(r.mapping || {});
+  $('#gaMapBody').innerHTML = entries.length ? entries.map(([siteUrl, pid]) => {
+    const p = props[pid] || {};
+    return `<tr>
+      <td class="u">${esc(siteUrl)}</td>
+      <td class="num">${esc(pid)}</td>
+      <td>${esc(p.display_name || '—')}${p.measurement_ids && p.measurement_ids.length
+        ? '<div class="note">衡量 ID ' + esc(p.measurement_ids.join(', ')) + '</div>' : ''}</td>
+      <td class="u">${esc((p.stream_uris || []).join(', ') || '—')}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="4"><div class="empty">没有配对成功的站点</div></td></tr>';
+
+  const un = r.unmatched_sites || [], up = r.unmatched_properties || [];
+  $('#gaMapNote').innerHTML =
+    `配对 ${entries.length} 个`
+    + (un.length ? ` · <b>${un.length} 个站点没找到对应 GA 属性</b>：${un.slice(0,5).map(esc).join('、')}${un.length>5?' …':''}` : '')
+    + (up.length ? ` · ${up.length} 个 GA 属性没配上站点` : '');
+  $('#gaMapCard').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+$('#btnGaSave').onclick = async () => {
+  if(!S.gaMap) return toast('先点「自动匹配 GA 属性」', 'err');
+  try{
+    const r = await api('/api/ga/mapping', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mapping: S.gaMap.mapping || {}})});
+    let msg = `已保存 ${r.saved} 个站点的对应关系`;
+    if(r.rejected && r.rejected.length)
+      msg += `，${r.rejected.length} 个被拒（不是纯数字的媒体资源 ID）`;
+    toast(msg, 'ok');
+    $('#gaMapHint').textContent = msg;
+    loadTraffic(false);
   }catch(e){ toast(e.message, 'err'); }
 };
 

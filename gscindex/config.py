@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +34,13 @@ DEFAULTS: dict = {
     "webauto_max_delay": 9,
     # 无窗口模式更快，但更容易被识别为自动化，默认关闭
     "webauto_headless": False,
+    # ---- 流量数据 ----
+    # 默认统计窗口。GSC 数据有 2~3 天延迟，窗口末端会自动前移，不用在这里补偿。
+    "traffic_window_days": 28,
+    # 站点 -> GA4 媒体资源 ID（纯数字）。注意不是跟踪代码里的 G-XXXXXXXXXX，
+    # 那个是"衡量 ID"、只用于发送数据，调 Data API 读数据认的是这串数字。
+    # 这份映射由「自动匹配 GA 属性」按数据流绑定的网址生成，一般不用手填。
+    "ga_property_map": {},
 }
 
 
@@ -52,6 +59,8 @@ class Config:
     webauto_min_delay: int = 4
     webauto_max_delay: int = 9
     webauto_headless: bool = False
+    traffic_window_days: int = 28
+    ga_property_map: dict = field(default_factory=dict)
 
     @property
     def accounts_path(self) -> Path:

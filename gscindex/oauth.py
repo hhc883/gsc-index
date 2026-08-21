@@ -22,10 +22,17 @@ TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v3/userinfo"
 REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
 
-# 第一个是干活用的（查站点/查收录/交站点地图），后两个只为在界面上显示"你授权的是哪个邮箱"。
+# webmasters   —— 查站点属性、查收录状态、交站点地图，以及 GSC 流量（Search Analytics
+#                 就在这个权限下，不需要额外申请）
+# analytics.readonly —— 读 GA4 数据，同时覆盖 Data API（拉数据）和 Admin API（列属性）
+# openid / email     —— 只为在界面上显示"你授权的是哪个邮箱"
 # 已移除 indexing 权限——Indexing API 不在本项目里了。
+SCOPE_WEBMASTERS = "https://www.googleapis.com/auth/webmasters"
+SCOPE_ANALYTICS = "https://www.googleapis.com/auth/analytics.readonly"
+
 SCOPES = [
-    "https://www.googleapis.com/auth/webmasters",
+    SCOPE_WEBMASTERS,
+    SCOPE_ANALYTICS,
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
 ]
@@ -170,6 +177,10 @@ def exchange_code(code: str, redirect_uri: str) -> dict:
         except requests.RequestException:
             pass  # 邮箱只用于显示，取不到不影响使用
 
+    # 存下 Google **实际批准**的权限范围。刷新 token 时要用这份，不能用代码里的
+    # SCOPES——否则以后给 SCOPES 加了新权限，老凭据刷新会被 invalid_scope 拒掉。
+    # Google 一般会回传 scope 字段；万一没回传，就按这次请求的算。
+    granted = (payload.get("scope") or "").split()
     return {
         "type": "oauth_user",
         "client_id": client["client_id"],
@@ -177,6 +188,7 @@ def exchange_code(code: str, redirect_uri: str) -> dict:
         "project_id": client.get("project_id", ""),
         "refresh_token": refresh,
         "email": email,
+        "scopes": granted or list(SCOPES),
     }
 
 
