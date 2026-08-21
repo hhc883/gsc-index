@@ -557,6 +557,13 @@ def api_traffic(
         "metric": metric,
         "analytics": engine.analytics_ready(),
         "ga_mapped": len(cfg.ga_property_map or {}),
+        # 具体是哪些站点没配 GA 属性。只给一个"已配 78 个"的数字是不够的：
+        # 非零就不报警的话，剩下那个站点的 GA 列会一直静默空白，
+        # 用户以为"这站没流量"，其实是根本没查过。
+        "ga_unmapped": [
+            r["site"] for r in rows
+            if not (cfg.ga_property_map or {}).get(r["site"])
+        ],
     }
 
 

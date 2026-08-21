@@ -43,6 +43,20 @@ STATE_CN = {
 }
 
 
+def _ga_reason_cn(u: dict) -> str:
+    """把配对失败的原因讲成一句能照着做的话。
+
+    只说"没配上"是没用的——用户不知道该去 GA 改、去 Search Console 加，
+    还是根本就没建这个属性。原因决定了动作，所以必须说出来。
+    """
+    if u.get("reason") == "typo":
+        return (f"GA 属性「{u.get('display_name') or u.get('property_id')}」的数据流网址写的是 "
+                f"{u.get('near_host')}，跟本站点只差 {u.get('near_distance')} 个字符——"
+                f"很可能是 GA 后台那条数据流的网址填错了。改对之后重新配对即可。")
+    return ("在 GA 里找不到网址匹配的属性。要么这个网站还没建 GA4 属性，"
+            "要么建了但没有网页数据流（数据流里没填网址就没法自动配）。")
+
+
 def _noop(_evt: dict) -> None:
     pass
 
@@ -851,12 +865,94 @@ class Engine:
                           "done": done, "total": len(props)})
 
         sites = [s["site_url"] for s in self.all_sites(account_name=account_name)]
-        mapping, unmatched_props, unmatched_sites = traffic.ga_match_sites(props, sites)
+        res = traffic.ga_match_sites(props, sites)
+        mapping = dict(res.mapping)
 
-        emit({"type": "log", "level": "success",
-              "message": f"自动配对成功 {len(mapping)} 个站点"
-                         + (f"，{len(unmatched_sites)} 个站点没找到对应属性" if unmatched_sites else "")
-                         + (f"，{len(unmatched_props)} 个属性没配上站点" if unmatched_props else "")})
+        # 同一个网址建了多个 GA4 属性时，光看网址分不出该用哪个。
+        # 按返回顺序挑"第一个"等于随机——挑到空属性的话，用户看到的是
+        # "这个站 GA 全是 0"，根本想不到是配错了属性。所以真去查一下谁有数据。
+        picked_note: list[dict] = []
+        if res.ambiguous:
+            emit({"type": "log", "level": "info",
+                  "message": f"{len(res.ambiguous)} 个站点有多个 GA 属性候选，"
+                             f"正在查哪个属性真的有数据…"})
+
+            def weigh(pid):
+                t = traffic.ga_totals(token, pid, 28,
+                                      timeout=self.cfg.request_timeout)
+                return pid, (t.sessions + t.events if t.ok else -1)
+
+            for site, cands in res.ambiguous.items():
+                with ThreadPoolExecutor(max_workers=min(4, len(cands))) as ex:
+                    scored = [f.result() for f in
+                              as_completed([ex.submit(weigh, c) for c in cands])]
+                scored.sort(key=lambda x: x[1], reverse=True)
+                best, best_score = scored[0]
+                mapping[site] = best
+                picked_note.append({
+                    "site": site, "chosen": best, "score": best_score,
+                    "others": [{"property_id": pid, "score": sc}
+                               for pid, sc in scored[1:]],
+                })
+                empties = [pid for pid, sc in scored[1:] if sc <= 0]
+                emit({"type": "log", "level": "info",
+                      "message": f"{site} 有 {len(cands)} 个候选属性，选了 {best}"
+                                 f"（近 28 天有数据）"
+                                 + (f"；另 {len(empties)} 个是空属性" if empties else "")})
+
+        # 落单的属性也查一下有没有数据：空的可以放心无视，
+        # 有数据的说明可能配错了，得让用户知道。这里数量很少，多几次请求无所谓。
+        if res.unmatched_props:
+            def probe(item):
+                t = traffic.ga_totals(token, item["property_id"], 28,
+                                      timeout=self.cfg.request_timeout)
+                item["has_data"] = bool(t.ok and (t.sessions or t.events))
+                item["sessions"] = t.sessions if t.ok else None
+                item["events"] = t.events if t.ok else None
+                return item
+
+            with ThreadPoolExecutor(
+                max_workers=min(max(1, self.cfg.concurrency), len(res.unmatched_props))
+            ) as ex:
+                list(as_completed([ex.submit(probe, it)
+                                   for it in res.unmatched_props]))
+
+        # 沿用上次手动保存的映射。自动配对搞不定的站点（比如 GA 那边网址填错了）
+        # 用户会手填一个 ID，如果这里不带上，下一次点"自动匹配"再保存就把他的
+        # 修正悄悄抹掉了——兜底入口等于白给。
+        saved = self.cfg.ga_property_map or {}
+        manual: list[dict] = []
+        still_bad = []
+        for u in res.unmatched_sites:
+            pid = saved.get(u["site"])
+            if pid:
+                mapping[u["site"]] = pid
+                # 单独记着：这条是人手指定的，不是自动配上的。界面上要区分标注，
+                # 否则下次自动配对结果变了，用户不知道哪些是自己当初修过的。
+                manual.append({**u, "property_id_manual": pid})
+            else:
+                still_bad.append(u)
+        if manual:
+            emit({"type": "log", "level": "info",
+                  "message": f"{len(manual)} 个站点沿用你之前手动指定的 GA 属性："
+                             + "、".join(m["site"] for m in manual[:5])})
+        res.unmatched_sites = still_bad
+        # 手动指定用掉的属性不再算"没配上站点"，否则下面那张落单表会列出
+        # 一个其实正在用的属性，跟主表自相矛盾
+        in_use = set(mapping.values())
+        res.unmatched_props = [u for u in res.unmatched_props
+                               if u["property_id"] not in in_use]
+
+        problems = len(res.unmatched_sites)
+        level = "warn" if problems else "success"
+        emit({"type": "log", "level": level,
+              "message": (f"配对完成：{len(mapping)} / {len(sites)} 个站点配上了 GA。"
+                          + (f"⚠ 还有 {problems} 个站点没配上，"
+                             f"它们的 GA 数据会一直是空白，需要处理。"
+                             if problems else "全部站点都配上了。"))})
+        for u in res.unmatched_sites:
+            emit({"type": "log", "level": "warn",
+                  "message": u["site"] + "：" + _ga_reason_cn(u)})
 
         return {
             "properties": [
@@ -870,8 +966,11 @@ class Engine:
                 for p in props
             ],
             "mapping": mapping,
-            "unmatched_sites": unmatched_sites,
-            "unmatched_properties": [p.property_id for p in unmatched_props],
+            "site_count": len(sites),
+            "unmatched_sites": res.unmatched_sites,
+            "unmatched_properties": res.unmatched_props,
+            "ambiguous": picked_note,
+            "manual_sites": manual,
         }
 
     def traffic_refresh(

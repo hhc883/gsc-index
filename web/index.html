@@ -163,6 +163,15 @@ td.c input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;marg
 .banner.warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn)}
 .banner.err{background:var(--err-soft);color:var(--err);border-color:var(--err)}
 .banner.info{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+.banner.ok{background:var(--ok-soft);color:var(--ok);border-color:var(--ok)}
+/* 状态标签：一眼看出哪几行没配上，比读文字快 */
+.tag{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-weight:600;
+  border:1px solid transparent;white-space:nowrap}
+.tag.ok{background:var(--ok-soft);color:var(--ok);border-color:var(--ok)}
+.tag.err{background:var(--err-soft);color:var(--err);border-color:var(--err)}
+.tag.warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn)}
+.btn.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+tr[data-bad] td{background:var(--err-soft)}
 .hide{display:none !important}
 code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px;
   font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
@@ -556,18 +565,37 @@ ol.steps b{color:var(--text)}
       注意跟踪代码里的 <code>G-XXXXXXXXXX</code> 是「衡量 ID」，只用于发送数据；
       调 API 读数据要的是纯数字的「媒体资源 ID」，两者不能混用。
     </p>
+    <!-- 有任何站点没配上就必须醒目：一行浅色小字会被读成"全都配好了"，
+         于是那几个站点的 GA 数据一直空白也没人去处理 -->
+    <div class="banner hide" id="gaMapAlert"></div>
     <div class="row" style="margin-bottom:11px">
       <button class="btn primary" id="btnGaSave">保存这份对应关系</button>
+      <button class="btn" id="gaMapOnlyBad">只看有问题的</button>
       <span class="hint" id="gaMapHint"></span>
     </div>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
-        <th>GSC 站点</th><th style="width:130px">媒体资源 ID</th>
-        <th>GA 属性名称</th><th style="width:180px">数据流网址</th>
+        <th style="width:78px">状态</th>
+        <th>GSC 站点</th><th style="width:126px">媒体资源 ID</th>
+        <th>GA 属性 / 说明</th><th style="width:170px">数据流网址</th>
       </tr></thead>
       <tbody id="gaMapBody"></tbody>
     </table></div></div>
     <p class="hint" id="gaMapNote" style="margin:9px 0 0"></p>
+
+    <div id="gaOrphanBox" class="hide" style="margin-top:16px">
+      <h3 style="margin:0 0 4px;font-size:14px">没配上任何站点的 GA 属性</h3>
+      <p class="hint" style="margin:0 0 9px">
+        空属性可以放心无视；<b>有数据却没配上的要留意</b>——很可能网址填错了，
+        或者这个网站还没加进 Search Console。
+      </p>
+      <div class="tbox"><div class="tscroll" style="max-height:240px"><table>
+        <thead><tr><th style="width:110px">媒体资源 ID</th><th>属性名称</th>
+          <th style="width:170px">数据流网址</th><th style="width:96px">近 28 天</th>
+          <th>原因</th></tr></thead>
+        <tbody id="gaOrphanBody"></tbody>
+      </table></div></div>
+    </div>
   </div>
 </section>
 
@@ -1477,6 +1505,16 @@ function renderGaBanner(r){
     el.innerHTML = 'GA 权限已就绪，但还没配置站点与 GA4 属性的对应关系。'
       + '点上面的「自动匹配 GA 属性」即可，不用手抄 ID。';
     el.className = 'banner warn';
+  } else if((r.ga_unmapped || []).length){
+    /* 大部分配上了不等于没问题。只看"已配 78 个"这个非零数字就不报警的话，
+       剩下那个站点的 GA 列会一直是空白，而空白跟"真的没流量"长得一样，
+       用户根本不会想到是没配属性。 */
+    const u = r.ga_unmapped;
+    el.innerHTML = `⚠️ 本表 ${S.traffic.length} 个站点里有 <b>${u.length} 个没有配 GA4 属性</b>，`
+      + `它们的 GA 各列<b>会一直是空白</b>，不是真的没流量：`
+      + `<br>${u.slice(0,8).map(esc).join('、')}${u.length > 8 ? ` …… 等 ${u.length} 个` : ''}`
+      + `<br>点上面的「自动匹配 GA 属性」，配对结果页会逐个说明原因和怎么改。`;
+    el.className = 'banner err';
   } else {
     el.classList.add('hide');
     return;
@@ -1850,29 +1888,137 @@ $('#btnGaDiscover').onclick = async () => {
   }catch(e){ toast(e.message, 'err'); }
 };
 
+/* 配对失败的原因 → 一句能照着做的话。只说"没配上"是没用的：
+   用户不知道该去 GA 改网址、去 Search Console 加站点，还是压根没建这个属性。 */
+function gaReasonCn(u){
+  if(u.reason === 'typo')
+    return `<b>GA 那边网址填错了。</b>属性「${esc(u.display_name || u.property_id)}」`
+      + `的数据流网址写的是 <code>${esc(u.near_host)}</code>，`
+      + `跟本站点只差 ${u.near_distance} 个字符。`
+      + `<br>去 GA 后台「管理 → 数据流」把网址改对，再点一次「自动匹配 GA 属性」；`
+      + `或者直接在左边填上媒体资源 <code>${esc(u.property_id)}</code> 保存。`;
+  return '<b>GA 里找不到网址匹配的属性。</b>要么这个网站还没建 GA4 属性，'
+    + '要么建了但数据流里没填网址（没网址就无法自动配对）。'
+    + '<br>知道媒体资源 ID 的话可以直接填在左边。';
+}
+
+function gaReasonShort(u){
+  return u.reason === 'typo'
+    ? `GA 那边网址写的是 ${u.near_host}`
+    : 'GA 里找不到网址匹配的属性';
+}
+
+const ORPHAN_CN = {
+  duplicate: h => `重复属性——<code>${esc(h)}</code> 已经由另一个属性配上了`,
+  not_in_gsc: h => `<code>${esc(h)}</code> 不在你的 Search Console 站点列表里`,
+  no_stream: () => '这个属性没有网页数据流（没有网址可比对，无法自动配对）',
+};
+
 function renderGaMap(r){
   $('#gaMapCard').classList.remove('hide');
   const props = {};
   (r.properties || []).forEach(p => props[p.property_id] = p);
-  const entries = Object.entries(r.mapping || {});
-  $('#gaMapBody').innerHTML = entries.length ? entries.map(([siteUrl, pid]) => {
-    const p = props[pid] || {};
+  const bad = r.unmatched_sites || [];
+  const orphans = r.unmatched_properties || [];
+  const picked = {};
+  (r.ambiguous || []).forEach(a => picked[a.site] = a);
+  // 人手指定的要跟自动配上的区分标注：下次自动配对结果变了，
+  // 用户得能看出哪几条是自己当初手动修过的
+  const manual = {};
+  (r.manual_sites || []).forEach(m => manual[m.site] = m);
+  const total = r.site_count || (Object.keys(r.mapping || {}).length + bad.length);
+
+  /* 没配上的站点排在最前面。放在表格末尾或脚注里等于藏起来——
+     79 行里第 79 行的一句话，没人会看见。 */
+  const rows = [
+    ...bad.map(u => ({bad: true, u, site: u.site, pid: ''})),
+    ...Object.entries(r.mapping || {}).map(([site, pid]) => ({bad: false, site, pid})),
+  ];
+
+  $('#gaMapBody').innerHTML = rows.length ? rows.map(x => {
+    if(x.bad) return `<tr data-bad="1">
+      <td><span class="tag err">未配对</span></td>
+      <td class="u">${esc(x.site)}</td>
+      <td><input class="gaPid" data-site="${esc(x.site)}" value=""
+                 placeholder="填 ID" style="width:104px"></td>
+      <td>${gaReasonCn(x.u)}</td>
+      <td class="u">—</td>
+    </tr>`;
+    const p = props[x.pid] || {};
+    const dup = picked[x.site];
+    const man = manual[x.site];
     return `<tr>
-      <td class="u">${esc(siteUrl)}</td>
-      <td class="num">${esc(pid)}</td>
+      <td><span class="tag ${man ? 'warn' : 'ok'}">${man ? '手动指定' : '已配对'}</span></td>
+      <td class="u">${esc(x.site)}</td>
+      <td><input class="gaPid" data-site="${esc(x.site)}" value="${esc(x.pid)}"
+                 style="width:104px"></td>
       <td>${esc(p.display_name || '—')}${p.measurement_ids && p.measurement_ids.length
-        ? '<div class="note">衡量 ID ' + esc(p.measurement_ids.join(', ')) + '</div>' : ''}</td>
+        ? '<div class="note">衡量 ID ' + esc(p.measurement_ids.join(', ')) + '</div>' : ''}${
+        dup ? `<div class="note">这个网址有 ${dup.others.length + 1} 个 GA 属性，`
+          + `已按<b>哪个真的有数据</b>选中当前这个`
+          + (dup.others.every(o => o.score <= 0) ? '（其余是空属性）' : '') + '</div>' : ''}${
+        man ? `<div class="note">自动配对配不上这个站点（${esc(gaReasonShort(man))}），`
+          + `当前用的是你之前手动指定的 ID</div>` : ''}</td>
       <td class="u">${esc((p.stream_uris || []).join(', ') || '—')}</td>
     </tr>`;
-  }).join('') : '<tr><td colspan="4"><div class="empty">没有配对成功的站点</div></td></tr>';
+  }).join('') : '<tr><td colspan="5"><div class="empty">还没有配对结果</div></td></tr>';
 
-  const un = r.unmatched_sites || [], up = r.unmatched_properties || [];
+  /* 醒目横幅。这是用户最容易误判的地方：看到"配对 78 个"就以为齐了，
+     实际漏掉的那个站点 GA 数据会永远是空白，而且不会再有任何提示。 */
+  const al = $('#gaMapAlert');
+  if(bad.length){
+    al.className = 'banner err';
+    al.innerHTML = `⚠️ <b>${total} 个站点里有 ${bad.length} 个没有配上 GA 属性</b>，`
+      + `它们的 GA 会话/浏览量/事件数<b>会一直是空白</b>，不处理就等于这几个站的 GA 数据丢了。`
+      + `<br>没配上的已经排在表格最前面，每一行都写了原因和该怎么改。`;
+  } else {
+    al.className = 'banner ok';
+    al.innerHTML = `✅ <b>${total} 个站点全部配上了 GA 属性</b>，没有遗漏。`;
+  }
+  al.classList.remove('hide');
+
+  const withData = orphans.filter(o => o.has_data);
   $('#gaMapNote').innerHTML =
-    `配对 ${entries.length} 个`
-    + (un.length ? ` · <b>${un.length} 个站点没找到对应 GA 属性</b>：${un.slice(0,5).map(esc).join('、')}${un.length>5?' …':''}` : '')
-    + (up.length ? ` · ${up.length} 个 GA 属性没配上站点` : '');
+    `已配对 <b>${Object.keys(r.mapping || {}).length} / ${total}</b> 个站点`
+    + (bad.length ? ` · <b style="color:var(--err)">${bad.length} 个未配对</b>` : '')
+    + (orphans.length ? ` · ${orphans.length} 个 GA 属性没配上站点`
+        + (withData.length ? `（其中 <b>${withData.length} 个有数据</b>，见下方）`
+                           : '（都是空属性，可无视）') : '')
+    + ' · 媒体资源 ID 可以直接改，改完点「保存这份对应关系」。';
+
+  $('#gaOrphanBox').classList.toggle('hide', !orphans.length);
+  $('#gaOrphanBody').innerHTML = orphans.map(o => `<tr>
+    <td class="num">${esc(o.property_id)}</td>
+    <td>${esc(o.display_name || '—')}</td>
+    <td class="u">${esc((o.uris || []).join(', ') || '（无）')}</td>
+    <td class="num">${o.has_data
+      ? `<b>${nfmt(o.sessions)} 会话</b>`
+      : (o.sessions === null ? '<span class="hint">查询失败</span>' : '<span class="hint">空</span>')}</td>
+    <td class="hint">${(ORPHAN_CN[o.reason] || (() => o.reason))(o.detail)}</td>
+  </tr>`).join('');
+
+  /* 手改单条：自动配对搞不定的（GA 那边网址错了又不方便改）总得有个兜底 */
+  $$('#gaMapBody .gaPid').forEach(inp => inp.onchange = () => {
+    const v = inp.value.trim();
+    if(v && !/^\d+$/.test(v)){
+      toast('媒体资源 ID 必须是纯数字。G-XXXXXXXXXX 是衡量 ID，不能用来读数据', 'err');
+      return;
+    }
+    S.gaMap.mapping = S.gaMap.mapping || {};
+    if(v) S.gaMap.mapping[inp.dataset.site] = v;
+    else delete S.gaMap.mapping[inp.dataset.site];
+    $('#gaMapHint').textContent = '有改动还没保存';
+  });
+
   $('#gaMapCard').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
+
+$('#gaMapOnlyBad').onclick = () => {
+  const on = $('#gaMapOnlyBad').classList.toggle('on');
+  $$('#gaMapBody tr').forEach(tr =>
+    tr.classList.toggle('hide', on && !tr.dataset.bad));
+  $('#gaMapOnlyBad').textContent = on ? '看全部' : '只看有问题的';
+};
 
 $('#btnGaSave').onclick = async () => {
   if(!S.gaMap) return toast('先点「自动匹配 GA 属性」', 'err');

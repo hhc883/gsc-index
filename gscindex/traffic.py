@@ -260,45 +260,133 @@ def _host(url: str) -> str:
     return u[4:] if u.startswith("www.") else u
 
 
+def _edit_distance(a: str, b: str, cap: int = 3) -> int:
+    """两个主机名差几个字符。超过 cap 就直接返回 cap+1，不必算准。
+
+    用来识别"GA 那边网址填错了一个字母"这种情况——实际遇到过
+    thebasementpan.com vs thebasementplan.com 只差一个 l，
+    纯字符串相等的比对只会说"没配上"，说不出为什么。
+    """
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
+        if min(cur) > cap:
+            return cap + 1
+        prev = cur
+    return prev[-1]
+
+
+def _near_miss(host: str, by_host: dict[str, list[str]]) -> tuple[str, int]:
+    """在所有 GA 数据流主机名里找一个跟 host 最像的，返回 (主机名, 差几个字符)。
+
+    只在差距很小、且主机名足够长时才认——短域名之间差一两个字符很可能是
+    两个真的不同的网站，硬报"疑似填错"会误导人。
+    """
+    if len(host) < 8:
+        return "", 99
+    best, best_d = "", 99
+    for h in by_host:
+        d = _edit_distance(host, h)
+        if d < best_d:
+            best, best_d = h, d
+    return (best, best_d) if best_d <= 2 else ("", 99)
+
+
+@dataclass
+class GaMatchResult:
+    """配对结果。刻意把"没配上"拆得很细——只报一个总数的话，
+    用户看不出该去做什么，很容易以为全都配好了，于是漏掉那几个站点的数据。
+    """
+    mapping: dict[str, str] = field(default_factory=dict)
+    # 一个站点有多个候选属性（同一网址建了多个 GA4 属性）。
+    # 光看网址分不出该用哪个，得看谁真的有数据——那一步要调 API，交给上层做。
+    ambiguous: dict[str, list[str]] = field(default_factory=dict)
+    # 每一项都带 reason，界面直接把原因显示出来
+    unmatched_sites: list[dict] = field(default_factory=list)
+    unmatched_props: list[dict] = field(default_factory=list)
+
+
 def ga_match_sites(
     props: list[GaProperty], site_urls: list[str]
-) -> tuple[dict[str, str], list[GaProperty], list[str]]:
-    """把 GA 属性和 GSC 站点对应起来。
+) -> GaMatchResult:
+    """把 GA 属性和 GSC 站点对应起来，并说清每一个没配上的原因。
 
-    优先用数据流里的真实网站地址匹配（可靠）；地址对不上时退而用属性名称里
-    是否包含域名来猜（不可靠，但比让用户手抄 79 个 ID 好）。
-
-    返回 (站点->属性ID 的映射, 没配上的属性, 没配上的站点)。
+    匹配依据是数据流里的真实网站地址（可靠）。配不上时不再只说"没配上"，
+    而是分门别类给出原因：GA 那边网址填错了一个字母、这是个重复属性、
+    这个属性根本没有网页数据流、这个网站没加进 Search Console……
+    这些原因决定了用户该去哪儿改，是这个函数最有价值的输出。
     """
-    by_host: dict[str, str] = {}
+    # host -> 所有声明了这个网址的属性。不用 setdefault 只留第一个：
+    # 同一网站建了多个 GA4 属性时，"先来的赢"等于按 Google 的返回顺序随机挑，
+    # 挑到空属性的话用户会看到"这个站 GA 全是 0"，根本想不到是配错了属性。
+    by_host: dict[str, list[str]] = {}
     for p in props:
         for uri in p.stream_uris:
             h = _host(uri)
             if h:
-                by_host.setdefault(h, p.property_id)
+                by_host.setdefault(h, []).append(p.property_id)
 
-    mapping: dict[str, str] = {}
+    prop_by_id = {p.property_id: p for p in props}
+    res = GaMatchResult()
+    used_hosts: set[str] = set()
     matched_props: set[str] = set()
-    unmatched_sites: list[str] = []
 
     for site in site_urls:
         h = _host(site)
-        pid = by_host.get(h)
-        if not pid:
-            # 退路：属性名称里带域名的也认，但这条不如数据流可靠
-            for p in props:
-                name = (p.display_name or "").lower()
-                if h and h in name:
-                    pid = p.property_id
-                    break
-        if pid:
-            mapping[site] = pid
-            matched_props.add(pid)
+        cands = by_host.get(h) or []
+        if len(cands) == 1:
+            res.mapping[site] = cands[0]
+            matched_props.add(cands[0])
+            used_hosts.add(h)
+        elif len(cands) > 1:
+            # 交给上层看数据定夺，这里先都记为已认领，免得又被算成"没配上站点"
+            res.ambiguous[site] = list(cands)
+            matched_props.update(cands)
+            used_hosts.add(h)
         else:
-            unmatched_sites.append(site)
+            near, dist = _near_miss(h, by_host)
+            if near:
+                pid = (by_host.get(near) or [""])[0]
+                pr = prop_by_id.get(pid)
+                res.unmatched_sites.append({
+                    "site": site, "host": h, "reason": "typo",
+                    "near_host": near, "near_distance": dist,
+                    "property_id": pid,
+                    "display_name": pr.display_name if pr else "",
+                })
+            else:
+                res.unmatched_sites.append({
+                    "site": site, "host": h, "reason": "missing",
+                })
 
-    unmatched_props = [p for p in props if p.property_id not in matched_props]
-    return mapping, unmatched_props, unmatched_sites
+    for p in props:
+        if p.property_id in matched_props:
+            continue
+        hosts = [_host(u) for u in p.stream_uris if _host(u)]
+        if not hosts:
+            reason, detail = "no_stream", ""
+        elif any(h in used_hosts for h in hosts):
+            # 这个网址已经由别的属性配上了 —— 典型的重复建属性
+            reason = "duplicate"
+            detail = next(h for h in hosts if h in used_hosts)
+        else:
+            reason, detail = "not_in_gsc", hosts[0]
+        res.unmatched_props.append({
+            "property_id": p.property_id,
+            "display_name": p.display_name,
+            "uris": list(p.stream_uris),
+            "measurement_ids": list(p.measurement_ids),
+            "reason": reason,
+            "detail": detail,
+        })
+
+    return res
 
 
 # --------------------------------------------------------------------------
