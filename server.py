@@ -573,6 +573,10 @@ def api_traffic(
         # 「近 28 天」是看不到的；把这份汇总交给界面，才能把"数据在另一个窗口"
         # 和"真的没数据"区分开，不然空表看起来就像功能坏了。
         "windows": store.traffic_windows(),
+        # 这个窗口下有记录的站点。界面拿它跟站点下拉框做差集，算出"从没拉过"的那些。
+        # 不能让界面从 rows 反推：rows 是筛选后的结果，而且从没拉过的站点在
+        # site_traffic 里连行都没有，怎么放宽条件都查不出来。
+        "sites_in_window": store.traffic_sites(w),
         "metric": metric,
         "analytics": engine.analytics_ready(),
         "ga_mapped": len(cfg.ga_property_map or {}),

@@ -604,6 +604,19 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def traffic_sites(self, window_days: int) -> list[str]:
+        """这个窗口下**有记录**的站点清单（不管那次拉成功没有）。
+
+        界面拿它跟"你名下全部 GSC 属性"做差集，就能算出"这个窗口从没拉过"的站点。
+        这件事没法靠 traffic_rank 反推：那个查询是 SELECT ... FROM site_traffic，
+        从没拉过的站点在表里连行都没有，所以无论怎么放宽 WHERE 条件都查不出来
+        ——「把还没拉取过的站点也列出来」这个开关曾经因此完全失效。
+        """
+        with self._lock:
+            return [r["site"] for r in self.conn.execute(
+                "SELECT site FROM site_traffic WHERE window_days = ?", (window_days,)
+            )]
+
     def traffic_row(self, site: str, window_days: int = 28) -> dict | None:
         with self._lock:
             r = self.conn.execute(

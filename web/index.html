@@ -554,8 +554,9 @@ https://siteB.com/article
     </div>
     <div class="row" style="margin-bottom:11px">
       <label class="chk"><input type="checkbox" id="fUnfetched">把"还没拉取过"的站点也列出来
-        <span class="hint">默认不含——否则会以 0 混进"零流量"结果里，把人误导</span></label>
+        <span class="hint">各列显示"未拉取"，不会以 0 混进"零流量"的结果里</span></label>
     </div>
+    <div class="banner hide" id="trNever"></div>
     <p class="hint" id="trDates" style="margin:0 0 9px"></p>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
@@ -754,7 +755,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const S = {
   cfg:{}, quota:null, webauto:null, sites:[], acctFilter:'',
   pend:[], allPend:[], oauth:null, currentJob:null, recheckPending:0,
-  traffic:[], trafficWindow:28, trSite:null, trDetail:'pages', gaMap:null,
+  traffic:[], trafficExtra:[], trafficWindow:28, trSite:null, trDetail:'pages', gaMap:null,
 };
 
 async function api(path, opts){
@@ -1750,6 +1751,24 @@ async function loadTraffic(filtered){
 
 /* 各窗口的数据量，摆在窗口选择器旁边。没有这个，"共 12 个站点有数据"
    会被读成"只有 12 个站有流量"，而真相是另外 79 个站的数据在别的窗口里。 */
+/* 这个窗口从没拉过的站点。必须用服务端给的 sites_in_window 来算，
+   不能拿表格里的行反推——表格是筛选后的结果，一筛就会把有数据的站点也算成"没拉过"。 */
+function neverFetched(r){
+  const have = new Set(r.sites_in_window || []);
+  return [...document.querySelectorAll('#site option')]
+    .map(o => o.value).filter(Boolean).filter(x => !have.has(x));
+}
+
+/* 把"从没拉过"的站点凑成表格行。它们在 site_traffic 里连行都没有，
+   所以只能在前端造出来——否则勾了「把还没拉取过的站点也列出来」也是空的，
+   而用户会以为表格已经涵盖他全部的站。 */
+function unfetchedRows(sites){
+  return sites.map(x => ({site: x, gsc_ok: 0, ga_ok: 0, never: true,
+                          impressions: null, clicks: null, ctr: null, position: null,
+                          sessions: null, users: null, views: null, events: null,
+                          bounce_rate: null, updated_at: null}));
+}
+
 function renderWindowHint(){
   const ws = S.trafficWindows || [];
   if(!ws.length){
@@ -1835,6 +1854,25 @@ function staleToday(r){
     x.updated_at && localDate(x.updated_at) !== r.dates.today);
 }
 
+/* "这个窗口从没拉过"的站点必须醒目点出来。这是最容易造成误判的一处：
+   表格说"共 80 个站点有数据"，用户会读成"我全部的站"，而新加的那个
+   压根不在表里、也没有任何痕迹——空缺比错误的数字更难发现。 */
+function renderNeverFetched(never, r){
+  const el = $('#trNever');
+  if(!el) return;
+  if(!never.length){ el.classList.add('hide'); return; }
+  const shown = $('#fUnfetched').checked;
+  el.className = 'banner warn';
+  el.innerHTML = `⚠️ <b>${never.length} 个站点在「${winCn(r.window_days)}」这个窗口从没拉过</b>`
+    + '，它们<b>不是没流量，是根本没查过</b>：<br>'
+    + never.slice(0, 8).map(x => `<code>${esc(shortSite(x))}</code>`).join('、')
+    + (never.length > 8 ? ` …… 等 ${never.length} 个` : '')
+    + '<br>点「拉取全部站点」把这个窗口补齐'
+    + (shown ? '。已按你的勾选把它们列进下面的表格（各列显示"未拉取"）。'
+             : '，或勾选下面的「把还没拉取过的站点也列出来」在表里看到它们。');
+  el.classList.remove('hide');
+}
+
 /* 空表必须说清是哪一种空：本窗口没拉过、这个指标没数据、还是阈值真的没人达到。
    只写"没有符合条件的站点"会让人以为功能坏了。 */
 function emptyWhy(r, filtered){
@@ -1899,19 +1937,31 @@ function renderTraffic(r, filtered){
   if(filtered && r.metric && (!S.trSort || S.trSort.byFilter))
     S.trSort = {col: r.metric, dir: SORT_ASC_FIRST.has(r.metric) ? 'asc' : 'desc',
                 byFilter: true};
+  const never = neverFetched(r);
+  /* 注入的"从没拉过"行必须跟真实结果分开存。混进 S.traffic 的话
+     "命中 N 个站点"会把它们一起算进去——筛「曝光 ≥ 1000」时显示"命中 71 个"，
+     而真正达标的只有 3 个，这个数字就是假的。 */
   S.traffic = sortTraffic(S.traffic);
+  S.trafficExtra = ($('#fUnfetched').checked && never.length)
+    ? unfetchedRows(never).sort((a, b) => a.site.localeCompare(b.site))
+    : [];
   renderSortHeads();
-  const rows = S.traffic;
+  const hits = S.traffic.length;              // 真正参与筛选并命中的
+  const rows = S.traffic.concat(S.trafficExtra);
   const metricCn = $('#fMetric').selectedOptions[0].textContent;
   const opCn = $('#fOp').selectedOptions[0].textContent.replace(/[≥≤] /, '');
+  const extraCn = S.trafficExtra.length
+    ? ` · 另列出 ${S.trafficExtra.length} 个从没拉过的站点（无数据，不参与筛选）` : '';
   $('#trSub').textContent = filtered
     ? `筛选条件：${metricCn} ${opCn} ${$('#fVal').value}`
       + ($('#fOp').value === 'between' ? ` ~ ${$('#fVal2').value}` : '')
-      + ` · ${winCn(S.trafficWindow)} · 命中 ${rows.length} 个站点`
-    : `${winCn(S.trafficWindow)}，共 ${rows.length} 个站点有数据。按指标筛出达标的站点，比如「GSC 曝光量 ≥ 1000」。`;
+      + ` · ${winCn(S.trafficWindow)} · 命中 ${hits} 个站点` + extraCn
+    : `${winCn(S.trafficWindow)}，共 ${hits} 个站点有数据${extraCn}。`
+      + '按指标筛出达标的站点，比如「GSC 曝光量 ≥ 1000」。';
 
-  $('#trBody').innerHTML = rows.length ? rows.map(x => `<tr>
-    <td class="u">${esc(x.site)}</td>
+  $('#trBody').innerHTML = rows.length ? rows.map(x => `<tr${x.never ? ' data-never="1"' : ''}>
+    <td class="u">${esc(x.site)}${x.never
+      ? '<div class="note">这个窗口从没拉过</div>' : ''}</td>
     <td class="num">${x.gsc_ok ? nfmt(x.impressions) : '<span class="hint">未拉取</span>'}</td>
     <td class="num">${x.gsc_ok ? nfmt(x.clicks) : '—'}</td>
     <td class="num">${x.gsc_ok && x.ctr != null ? (x.ctr*100).toFixed(2) + '%' : '—'}</td>
@@ -1929,6 +1979,7 @@ function renderTraffic(r, filtered){
 
   renderWindowHint();
   renderDates(r);
+  renderNeverFetched(never, r);
   const stale = staleToday(r);
   if(stale.length){
     $('#trCount').innerHTML = `<b>其中 ${stale.length} 个站点的「今日」数据是之前某天拉的</b>，`
@@ -1937,6 +1988,7 @@ function renderTraffic(r, filtered){
     ? `GSC 数据截止到 2~3 天前（Google 自身延迟）。GA 各列为空说明还没授权，`
       + `或者本工具还不知道该读哪个 GA4 属性（新增站点后要重新匹配一次）。` : '';
 
+  // 导出 CSV 只导真实数据，不导注入的占位行
   $$('#trBody [data-tr-go]').forEach(b => b.onclick = () => {
     ensureSiteOption(b.dataset.trGo);
     $('#site').dispatchEvent(new Event('change'));
