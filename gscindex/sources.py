@@ -121,6 +121,93 @@ def host_of(site_url: str) -> str:
     return urlparse(site_url).netloc
 
 
+def _norm_host(h: str) -> str:
+    """比对用的主机名：去端口、去 www.、小写。"""
+    h = (h or "").strip().lower().split(":")[0].rstrip("/")
+    return h[4:] if h.startswith("www.") else h
+
+
+def _host_distance(a: str, b: str, cap: int = 2) -> int:
+    """两个主机名差几个字符，超过 cap 就不算准。
+
+    用来识别"手打错了一个字母"——比如粘进来 exmaple.com 而属性里是
+    example.com。只报"不属于任何站点"的话，用户会以为这个站没加进
+    Search Console，实际只是打错了。
+    """
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
+        if min(cur) > cap:
+            return cap + 1
+        prev = cur
+    return prev[-1]
+
+
+def match_sites(urls: list[str], site_urls: list[str]) -> tuple[dict[str, list[str]], list[dict]]:
+    """把一堆 URL 按所属 GSC 属性分组，返回 ({属性: [URL...]}, 判不出归属的)。
+
+    这是"粘贴任意链接、不用先选站点"的基础：用户手里的链接可能横跨几十个站点，
+    让他先选站点再粘贴是本末倒置。
+
+    两种属性写法都要支持：
+      sc-domain:example.com   → example.com 及其全部子域
+      https://example.com/x/  → 按路径前缀
+
+    一个 URL 可能同时落在两个属性里（https://x.com/ 和 https://x.com/blog/），
+    取**前缀最长**的那个——更具体的属性才是这条 URL 真正归属的地方。
+
+    判不出归属的**逐条给原因**，绝不静默丢掉。少提交一条是小事，
+    但用户以为交上去了、实际被悄悄扔了，就会一直等一个不会来的结果。
+    """
+    # (属性, 匹配函数, 前缀长度) —— 前缀长度用来在多个匹配里挑最具体的
+    specs = []
+    hosts: dict[str, str] = {}     # 归一化主机名 -> 属性（近似检测用）
+    for site in site_urls:
+        site = (site or "").strip()
+        if not site:
+            continue
+        specs.append((site, site_matcher(site), len(site)))
+        hosts.setdefault(_norm_host(host_of(site)), site)
+
+    groups: dict[str, list[str]] = {}
+    unknown: list[dict] = []
+
+    for raw in urls:
+        u = normalize(raw)
+        if not u:
+            unknown.append({"input": str(raw)[:200], "reason": "bad_url"})
+            continue
+
+        hit = [(site, plen) for site, fn, plen in specs if fn(u)]
+        if hit:
+            hit.sort(key=lambda x: x[1], reverse=True)
+            groups.setdefault(hit[0][0], []).append(u)
+            continue
+
+        # 没落进任何属性。是打错了字，还是这个站真的没加进 Search Console？
+        h = _norm_host(urlparse(u).netloc)
+        near, near_d = "", 99
+        if len(h) >= 8:
+            for cand in hosts:
+                d = _host_distance(h, cand)
+                if d < near_d:
+                    near, near_d = cand, d
+        if near and near_d <= 2:
+            unknown.append({"input": u, "host": h, "reason": "typo",
+                            "near_host": near, "near_site": hosts[near],
+                            "near_distance": near_d})
+        else:
+            unknown.append({"input": u, "host": h, "reason": "not_a_property"})
+
+    return groups, unknown
+
+
 # --------------------------------------------------------------------------
 # 站点地图
 # --------------------------------------------------------------------------

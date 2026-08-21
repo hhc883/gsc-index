@@ -188,15 +188,43 @@ def cmd_request(args) -> None:
 
 def cmd_inspect(args) -> None:
     cfg, _, engine = build(args)
-    if not cfg.site_url:
-        sys.exit("请用 --site 指定站点")
     urls = collect_urls(args)
     if not urls:
         sys.exit("没有拿到任何 URL")
-    res = engine.analyze(urls, cfg.site_url, do_inspect=True, force=True, emit=emit)
+    # --auto（或压根没设站点）时让引擎逐条判定归属：清单文件里的链接
+    # 完全可能横跨好几个站点，强迫用户先 --site 一个再跑是本末倒置
+    auto = getattr(args, "auto", False) or not cfg.site_url
+    res = engine.analyze(urls, "" if auto else cfg.site_url,
+                         do_inspect=True, force=True, emit=emit)
+    if res.get("error"):
+        sys.exit(res["error"])
     print()
     for r in res["rows"]:
-        print(f"[{r['verdict'] or '?':>7}] {r['coverage'] or r['state_cn']:<16} {r['url']}")
+        site = _short_site(r.get("site")) if auto else ""
+        print(f"[{r['verdict'] or '?':>7}] {r['coverage'] or r['state_cn']:<16} "
+              + (f"{site:<24} " if auto else "") + r["url"])
+    unk = res.get("unknown") or []
+    if unk:
+        # 判不出归属的单独列在最后并说明原因，不能混在上面一大片里滚过去
+        print()
+        print(f"!! {len(unk)} 条判不出属于哪个站点，不会提交：")
+        for x in unk:
+            print("   " + (x.get("input") or "") + " —— " + _unknown_cn(x))
+
+
+def _short_site(s: str) -> str:
+    s = str(s or "")
+    return (s.replace("sc-domain:", "").replace("https://", "")
+            .replace("http://", "").rstrip("/")) or "?"
+
+
+def _unknown_cn(x: dict) -> str:
+    if x.get("reason") == "typo":
+        return (f"你的属性里没有 {x.get('host')}，但有 {x.get('near_host')}"
+                f"（差 {x.get('near_distance')} 个字符），很可能打错了")
+    if x.get("reason") == "not_a_property":
+        return f"{x.get('host')} 不在你的任何 GSC 属性里"
+    return "解析不出合法网址"
 
 
 def cmd_sitemap(args) -> None:
@@ -316,8 +344,11 @@ def main() -> None:
     rq.set_defaults(fn=cmd_request)
 
     i = sub.add_parser("inspect", help="只查收录状态，不做任何提交")
-    i.add_argument("--file")
+    i.add_argument("--file", help="URL 清单文件，一行一条，# 开头为注释")
     i.add_argument("--sitemap")
+    i.add_argument("--auto", action="store_true",
+                   help="不指定站点，逐条自动判定每个 URL 属于哪个 GSC 属性"
+                        "（清单里可以混着多个站点的链接）")
     i.set_defaults(fn=cmd_inspect)
 
     m = sub.add_parser("sitemap", help="站点地图管理")

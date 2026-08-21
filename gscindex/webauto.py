@@ -372,8 +372,7 @@ def _do_one(page, site_url: str, url: str, *, nav_timeout_ms: int = 30000) -> Re
 
 def request_indexing_batch(
     session_path: Path,
-    site_url: str,
-    urls: list[str],
+    items: list[tuple[str, str]],
     *,
     headless: bool = False,
     nav_timeout_ms: int = 30000,
@@ -382,7 +381,12 @@ def request_indexing_batch(
     take_quota=None,
     delay=None,
 ) -> list[tuple[str, RequestResult]]:
-    """一个浏览器会话跑完整批 URL，避免每条都重启浏览器。
+    """一个浏览器会话跑完整批，避免每条都重启浏览器。
+
+    items 是 (所属站点, URL) 的列表，**允许跨站点**：GSC 的检查入口是
+    概览页 `?resource_id={站点}`，每条本来就要重新导航一次，所以换站点
+    跟换 URL 一样便宜，不需要为每个站点重开浏览器。这让"粘贴一批横跨
+    几十个站点的链接一次交完"成为可能。
 
     启动 Chrome 并加载 GSC 大约要十几秒，逐条重开的话这部分开销会被重复 N 遍。
     这里只启动一次、只清理一次残留进程，然后循环处理。
@@ -390,12 +394,13 @@ def request_indexing_batch(
     几个回调让调用方能在不侵入浏览器逻辑的前提下控制流程：
       on_result(url, result) —— 每条出结果就回调，界面可以实时更新
       should_stop()          —— 返回 True 就停止（用户点了停止按钮）
-      take_quota(url)        —— 返回 False 表示名额不够，跳过剩下的
+      take_quota(url)        —— 返回 False 表示名额不够，跳过这一条
       delay()                —— 两条之间的随机间隔
 
     遇到验证码或 Google 侧配额用尽会立即中断整批——继续点下去没有意义，
     而且在已经被限流的情况下继续操作只会让情况更糟。
     """
+    urls = [u for _st, u in items]
     if not has_session(session_path):
         return [(u, RequestResult(False, "no_session", "还没有登录会话，请先完成一次登录")) for u in urls]
 
@@ -424,14 +429,16 @@ def request_indexing_batch(
 
         page = context.pages[0] if context.pages else context.new_page()
         try:
-            for i, url in enumerate(urls):
+            for i, (item_site, url) in enumerate(items):
                 if should_stop and should_stop():
                     break
-                if take_quota and not take_quota(url):
-                    break
+                # 名额是按站点算的，某个站点用完了不代表别的站点也用完了，
+                # 所以这里只跳过这一条，不中断整批
+                if take_quota and not take_quota(item_site, url):
+                    continue
 
                 try:
-                    res = _do_one(page, site_url, url, nav_timeout_ms=nav_timeout_ms)
+                    res = _do_one(page, item_site, url, nav_timeout_ms=nav_timeout_ms)
                 except PWTimeout as exc:
                     res = RequestResult(False, "error", "页面加载超时：" + str(exc)[:160])
                 except Exception as exc:
@@ -451,7 +458,7 @@ def request_indexing_batch(
                 # 验证码和 Google 侧配额用尽都必须立刻停整批
                 if res.status in ("challenge", "quota_exceeded"):
                     break
-                if i < len(urls) - 1 and delay and not (should_stop and should_stop()):
+                if i < len(items) - 1 and delay and not (should_stop and should_stop()):
                     delay()
         finally:
             try:
@@ -472,7 +479,8 @@ def request_indexing(
 ) -> RequestResult:
     """单条便捷入口（CLI 和只交一条时用），内部走批量实现。"""
     res = request_indexing_batch(
-        session_path, site_url, [url], headless=headless, nav_timeout_ms=nav_timeout_ms
+        session_path, [(site_url, url)], headless=headless,
+        nav_timeout_ms=nav_timeout_ms
     )
     return res[0][1] if res else RequestResult(False, "error", "没有返回结果")
 

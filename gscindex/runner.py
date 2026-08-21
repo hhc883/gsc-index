@@ -43,6 +43,22 @@ STATE_CN = {
 }
 
 
+def _unknown_reason_cn(x: dict) -> str:
+    """判不出归属的原因，说成一句能照着做的话。
+
+    只说"不属于任何站点"是不够的：用户分不清是自己把域名打错了、
+    还是这个网站压根没加进 Search Console，这两种要做的事完全不同。
+    """
+    r = x.get("reason")
+    if r == "typo":
+        return (f"你的 GSC 属性里没有 {x.get('host')}，但有 {x.get('near_host')}"
+                f"（只差 {x.get('near_distance')} 个字符）——很可能是网址打错了。")
+    if r == "not_a_property":
+        return (f"{x.get('host')} 不在你的任何 GSC 属性里。这个网站可能还没加进 "
+                f"Search Console，加进去并验证之后才能申请收录。")
+    return "这一行解析不出合法网址，已忽略。"
+
+
 def _ga_reason_cn(u: dict) -> str:
     """把配对失败的原因讲成一句能照着做的话。
 
@@ -279,20 +295,52 @@ class Engine:
         account_name: str = "",
         emit: Emit = _noop,
     ) -> dict:
-        """去重 → 站点归属过滤 → 重复提交过滤 → 收录预检，返回逐条结果。"""
+        """去重 → 站点归属判定 → 重复提交过滤 → 收录预检，返回逐条结果。
+
+        site_url 传空字符串表示**自动判定归属**：适用于用户直接粘贴一批链接、
+        而这批链接可能横跨几十个站点的情况——让他先选站点再粘贴是本末倒置。
+        自动模式下逐条查出所属 GSC 属性，按站点分别用有权限的凭据去预检。
+        """
         raw_count = len(urls)
         urls = sources.dedupe([u for u in (sources.normalize(u) for u in urls) if u])
         emit({"type": "log", "level": "info", "message": f"输入 {raw_count} 条，去重后 {len(urls)} 条"})
 
-        match = sources.site_matcher(site_url)
+        auto = not (site_url or "").strip()
         rows: dict[str, dict] = {}
-        candidates: list[str] = []
+        # 站点 -> 该站点下待预检的 URL。单站点模式也走这条路，只是只有一个键，
+        # 这样下游预检、汇总逻辑不用分叉。
+        per_site: dict[str, list[str]] = {}
+        unknown: list[dict] = []
+        site_of: dict[str, str] = {}
+
+        if auto:
+            all_sites = [x["site_url"] for x in self.all_sites(account_name=account_name)]
+            if not all_sites:
+                msg = "拿不到你的 GSC 属性列表，无法自动判定链接归属。请检查凭据。"
+                emit({"type": "log", "level": "error", "message": msg})
+                return {"error": msg, "summary": {}, "rows": [], "unknown": []}
+            groups, unknown = sources.match_sites(urls, all_sites)
+            for st, us in groups.items():
+                for u in us:
+                    site_of[u] = st
+            emit({"type": "log", "level": "info",
+                  "message": f"自动判定归属：{sum(len(v) for v in groups.values())} 条落在 "
+                             f"{len(groups)} 个站点"
+                             + (f"，{len(unknown)} 条判不出归属" if unknown else "")})
+        else:
+            match = sources.site_matcher(site_url)
+            for u in urls:
+                if match(u):
+                    site_of[u] = site_url
 
         for u in urls:
-            self.store.seen(u, site_url)
+            st = site_of.get(u, "")
+            if st:
+                self.store.seen(u, st)
             hist = self.store.url_row(u)
             row = {
                 "url": u,
+                "site": st,
                 "state": STATE_PENDING,
                 "state_cn": STATE_CN[STATE_PENDING],
                 "coverage": "",
@@ -303,24 +351,34 @@ class Engine:
                 "selected": True,
                 "note": "",
             }
-            if not match(u):
+            if not st:
                 row.update(
                     state=STATE_OFFSITE,
-                    state_cn=STATE_CN[STATE_OFFSITE],
+                    # 自动模式下没有"本站点"这个概念，说"不属于本站点"会让人
+                    # 以为是选错了站点，实际是这条链接不属于他的任何一个属性
+                    state_cn="判不出归属" if auto else STATE_CN[STATE_OFFSITE],
                     selected=False,
-                    note="与所选 GSC 属性不匹配，提交必定失败",
+                    note=(_unknown_reason_cn(next((x for x in unknown
+                                                   if x.get("input") == u), {}))
+                          if auto else "与所选 GSC 属性不匹配，提交必定失败"),
                 )
             else:
-                candidates.append(u)
+                per_site.setdefault(st, []).append(u)
             rows[u] = row
 
         offsite = sum(1 for r in rows.values() if r["state"] == STATE_OFFSITE)
         if offsite:
-            emit({"type": "log", "level": "warn", "message": f"{offsite} 条不属于所选站点，已排除"})
+            emit({"type": "log", "level": "warn",
+                  "message": (f"⚠ {offsite} 条判不出属于哪个站点，已排除且不会提交"
+                              if auto else f"{offsite} 条不属于所选站点，已排除")})
+            for x in unknown:
+                emit({"type": "log", "level": "warn",
+                      "message": x.get("input", "") + "：" + _unknown_reason_cn(x)})
 
         # 近期已提交过的
         if not force and self.cfg.resubmit_after_days > 0:
-            recent = self.store.recently_submitted(candidates, self.cfg.resubmit_after_days)
+            flat = [u for us in per_site.values() for u in us]
+            recent = self.store.recently_submitted(flat, self.cfg.resubmit_after_days)
             for u in recent:
                 rows[u].update(
                     state=STATE_RECENT,
@@ -328,19 +386,40 @@ class Engine:
                     selected=False,
                     note=f"{self.cfg.resubmit_after_days} 天内已提交过",
                 )
-            candidates = [u for u in candidates if u not in recent]
+            per_site = {st: [u for u in us if u not in recent]
+                        for st, us in per_site.items()}
+            per_site = {st: us for st, us in per_site.items() if us}
             if recent:
                 emit({"type": "log", "level": "info", "message": f"{len(recent)} 条近期已提交，已排除"})
 
-        # 收录预检
-        if do_inspect and candidates:
-            self._inspect_many(candidates, site_url, rows, emit, account_name=account_name)
-        elif candidates:
+        # 收录预检。逐站点来：凭据权限是按站点给的，拿一个对该站点没权限的凭据
+        # 去查会整批失败（历史上真出过这个 bug），所以每个站点各自挑凭据。
+        if do_inspect and per_site:
+            for st, us in per_site.items():
+                if len(per_site) > 1:
+                    emit({"type": "log", "level": "info",
+                          "message": f"预检 {st}（{len(us)} 条）"})
+                self._inspect_many(us, st, rows, emit, account_name=account_name)
+        elif per_site:
             # 跳过预检时仍归类为待提交，只在文案上标明没查过
-            for u in candidates:
-                rows[u].update(state_cn=STATE_CN[STATE_PENDING] + "（未预检）")
+            for us in per_site.values():
+                for u in us:
+                    rows[u].update(state_cn=STATE_CN[STATE_PENDING] + "（未预检）")
 
         ordered = [rows[u] for u in urls]
+        # 每个站点各命中几条，界面按站点分组显示要用
+        by_site: dict[str, dict] = {}
+        for r in ordered:
+            if not r["site"]:
+                continue
+            b = by_site.setdefault(r["site"], {"site": r["site"], "total": 0,
+                                              "pending": 0, "indexed": 0})
+            b["total"] += 1
+            if r["state"] == STATE_PENDING:
+                b["pending"] += 1
+            elif r["state"] == STATE_INDEXED:
+                b["indexed"] += 1
+
         summary = {
             "raw": raw_count,
             "deduped": len(urls),
@@ -349,16 +428,21 @@ class Engine:
             "recent": sum(1 for r in ordered if r["state"] == STATE_RECENT),
             "offsite": offsite,
             "unknown": sum(1 for r in ordered if r["state"] == STATE_UNKNOWN),
+            "site_count": len(by_site),
         }
         emit(
             {
                 "type": "log",
-                "level": "success",
+                "level": "warn" if offsite else "success",
                 "message": f"分析完成：待提交 {summary['pending']} · 已收录 {summary['indexed']} "
-                f"· 近期已交 {summary['recent']} · 站外 {summary['offsite']}",
+                f"· 近期已交 {summary['recent']}"
+                + (f" · ⚠ {offsite} 条判不出归属（不会提交，需要你处理）"
+                   if (auto and offsite) else f" · 站外 {offsite}" if offsite else ""),
             }
         )
-        return {"summary": summary, "rows": ordered, "site_url": site_url}
+        return {"summary": summary, "rows": ordered, "site_url": site_url,
+                "auto": auto, "unknown": unknown,
+                "sites": sorted(by_site.values(), key=lambda x: -x["pending"])}
 
     def _inspect_many(
         self,
@@ -563,43 +647,64 @@ class Engine:
     # ------------------------------------------------------------------
 
     def webauto_submit(
-        self, site_url: str, urls: list[str], *, emit: Emit = _noop, should_stop=None
+        self, site_url: str, urls: list[str], *, emit: Emit = _noop, should_stop=None,
+        items: list[tuple[str, str]] | None = None,
     ) -> dict:
         """逐个 URL 去 GSC 网页点"请求编入索引"。
 
         整批复用同一个浏览器会话——启动 Chrome 并加载 GSC 大约要十几秒，
         以前每条都重开一次，这部分开销被重复 N 遍。现在只启动一次。
 
+        传 items=[(站点, URL), ...] 可以**跨站点**一次交完：GSC 的检查入口是
+        概览页 ?resource_id={站点}，每条本来就要重新导航，换站点不额外花钱。
+        名额是按站点算的，所以跨站点提交等于同时用了好几个独立的名额桶——
+        某个站点用完只跳过它自己的那几条，不影响别的站点。
+
         仍然是串行 + 随机间隔，不做并发：Google 那边的每日上限不明
         （撞到"超出了配额"就是到顶了），并发只会更快撞墙、更像机器人。
         """
+        if items is None:
+            items = [(site_url, u) for u in urls]
         if not webauto.has_session(self.cfg.webauto_session_path):
             emit({"type": "log", "level": "error",
                   "message": "还没有浏览器登录，请先到「账号管理」完成一次浏览器登录"})
-            return {"ok": 0, "failed": 0, "skipped": len(urls), "error": "未登录浏览器"}
+            return {"ok": 0, "failed": 0, "skipped": len(items), "error": "未登录浏览器"}
 
         limit = self.cfg.webauto_daily_limit
-        used = self.store.webauto_used(site_url)
-        total = len(urls)
-        emit({"type": "log", "level": "info",
-              "message": f"开始处理 {total} 条。{site_url} 今日已用 {used}/{limit} 次。"
-                         f"整批共用一个浏览器窗口，不再逐条重启"})
+        total = len(items)
+        sites = sorted({st for st, _u in items})
+        if len(sites) > 1:
+            emit({"type": "log", "level": "info",
+                  "message": f"开始处理 {total} 条，横跨 {len(sites)} 个站点。"
+                             f"名额按站点分别计算，整批共用一个浏览器窗口"})
+            for st in sites:
+                n = sum(1 for s2, _u in items if s2 == st)
+                emit({"type": "log", "level": "info",
+                      "message": f"  {st}：本批 {n} 条，"
+                                 f"今日已用 {self.store.webauto_used(st)}/{limit}"})
+        else:
+            emit({"type": "log", "level": "info",
+                  "message": f"开始处理 {total} 条。{sites[0] if sites else site_url} "
+                             f"今日已用 {self.store.webauto_used(sites[0] if sites else site_url)}"
+                             f"/{limit} 次。整批共用一个浏览器窗口，不再逐条重启"})
         emit({"type": "progress", "phase": "webauto", "done": 0, "total": total})
 
-        stats = {"ok": 0, "failed": 0, "done": 0, "quota_stop": False}
+        stats = {"ok": 0, "failed": 0, "done": 0, "quota_stop": False, "no_quota": 0}
+        site_of_url = dict((u, st) for st, u in items)
 
-        def take_quota(url: str) -> bool:
-            if self.store.webauto_take(site_url, limit):
+        def take_quota(item_site: str, url: str) -> bool:
+            if self.store.webauto_take(item_site, limit):
                 return True
+            stats["no_quota"] += 1
             emit({"type": "log", "level": "warn",
-                  "message": f"本地每日上限 {limit} 已用完，剩余的留到明天"})
+                  "message": f"{url} 跳过：{item_site} 今日 {limit} 个名额已用完，留到明天"})
             return False
 
         def on_result(url: str, res) -> None:
             # 只有真的递交出去才占名额；其余情况一律退还，
             # 否则一次网络抖动就白吃掉一个本来就稀缺的名额
             if not res.ok:
-                self.store.webauto_refund(site_url)
+                self.store.webauto_refund(site_of_url.get(url, site_url))
 
             self.store.log(
                 "webauto", url, "webauto",
@@ -629,7 +734,7 @@ class Engine:
                   "done": stats["done"], "total": total})
 
         results = webauto.request_indexing_batch(
-            self.cfg.webauto_session_path, site_url, urls,
+            self.cfg.webauto_session_path, items,
             headless=self.cfg.webauto_headless,
             on_result=on_result,
             should_stop=should_stop,
@@ -641,15 +746,23 @@ class Engine:
 
         skipped = total - stats["done"]
         if skipped > 0 and not stats["quota_stop"]:
-            emit({"type": "log", "level": "warn", "message": f"{skipped} 条未处理"})
+            emit({"type": "log", "level": "warn",
+                  "message": f"⚠ {skipped} 条没有提交"
+                             + (f"（其中 {stats['no_quota']} 条是站点名额用完）"
+                                if stats["no_quota"] else "")
+                             + "，这些链接仍在清单里，明天可以再来"})
         emit({"type": "log", "level": "success" if stats["ok"] else "warn",
               "message": f"结束：成功 {stats['ok']} 条，失败 {stats['failed']} 条，"
-                         f"未处理 {skipped} 条"})
+                         f"未提交 {skipped} 条"})
         return {
             "ok": stats["ok"], "failed": stats["failed"], "skipped": skipped,
-            "results": [{"url": u, "status": r.status, "message": r.message}
+            "no_quota": stats["no_quota"],
+            "results": [{"url": u, "site": site_of_url.get(u, ""),
+                         "status": r.status, "message": r.message}
                         for u, r in results],
-            "used_today": self.store.webauto_used(site_url), "limit": limit,
+            # 跨站点时"今日已用"不是一个数字，逐站点给
+            "used_today": {st: self.store.webauto_used(st) for st in sites},
+            "limit": limit,
         }
 
     # ------------------------------------------------------------------

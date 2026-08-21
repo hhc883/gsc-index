@@ -83,6 +83,13 @@ button,select,input,textarea{font-family:inherit;font-size:13.5px}
 select,input[type=text],input[type=number],input[type=url]{
   padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--panel);color:var(--text);outline:none}
 select:focus,input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:7px;border:1px solid var(--border);
+  background:var(--panel);color:var(--text);outline:none;font-size:12.5px;line-height:1.65;resize:vertical;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+/* 卡片里的并列小节：把"从站点地图抓" 和 "直接粘贴"摆成同一层级的两种选择，
+   而不是让其中一个看起来像另一个的补充说明 */
+.subcard{border:1px solid var(--border);border-radius:9px;padding:14px;background:var(--panel2)}
+.subcard h3{margin:0 0 7px;font-size:13px;font-weight:650;display:flex;align-items:center}
 label.chk{display:inline-flex;align-items:center;gap:7px;cursor:pointer;user-select:none;font-size:13px}
 label.chk input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;margin:0}
 .hint{color:var(--muted);font-size:12.5px}
@@ -258,19 +265,46 @@ ol.steps b{color:var(--text)}
   <div class="banner warn hide" id="siteWarn"></div>
 
   <div class="card">
-    <h2>第一步：扫描全站，找出没被收录的页面</h2>
+    <h2>第一步：找出要申请的链接（两种方式，任选）</h2>
     <p class="sub">
-      从站点地图抓出全部 URL，再用官方接口逐个查收录状态。这一步用的是充裕的查询配额，
-      可以放心扫；未收录的结果会存进待办池，跨天保留。
+      两种方式的产出一样，都会落进下面第二步的表格，也都会进「链接清单」跨天保留。
+      这一步用的是<b>充裕的查询配额</b>（2000 次/天/凭据），可以放心查。
     </p>
-    <div class="row">
-      <input type="url" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" style="flex:1;min-width:280px">
-      <button class="btn primary" id="btnScan">开始扫描</button>
-      <button class="btn" id="btnSubmitSitemap">顺便把站点地图交给 GSC</button>
+
+    <div class="subcard">
+      <h3>方式 A · 从站点地图抓取</h3>
+      <div class="row">
+        <input type="url" id="sitemapUrl" placeholder="https://example.com/sitemap.xml" style="flex:1;min-width:260px">
+        <button class="btn primary" id="btnScan">开始扫描</button>
+        <button class="btn" id="btnSubmitSitemap">顺便把站点地图交给 GSC</button>
+      </div>
+      <p class="hint" style="margin:9px 0 0">
+        已按<b>当前选中的站点</b>自动填充，地址不对可以直接改。自动识别 sitemap index 嵌套与 .gz 压缩。
+      </p>
     </div>
-    <p class="hint" style="margin:9px 0 0">
-      已按当前选中的站点自动填充，地址不对可以直接改。自动识别 sitemap index 嵌套与 .gz 压缩。
-    </p>
+
+    <div class="banner hide" id="pasteAlert" style="margin-top:12px;margin-bottom:0"></div>
+    <div class="subcard" style="margin-top:12px">
+      <h3>方式 B · 直接粘贴链接<span class="tag ok" style="margin-left:7px">不用选站点</span></h3>
+      <p class="hint" style="margin:0 0 8px">
+        一行一条，也支持逗号分隔；<code>#</code> 开头的行当注释忽略。
+        <b>可以混着粘贴不同站点的链接</b>——工具会逐条查出它属于你哪个 GSC 属性，
+        判不出归属的会单独标红列出来，不会悄悄丢掉。
+      </p>
+      <textarea id="pasteUrls" rows="6" placeholder="https://siteA.com/page-1
+https://siteA.com/page-2
+https://siteB.com/article
+# 上面三条属于两个不同的站点，直接一起粘就行"></textarea>
+      <div class="row" style="margin-top:9px">
+        <button class="btn primary" id="btnPasteCheck">查询收录状态</button>
+        <button class="btn" id="btnPasteClear">清空</button>
+        <span class="hint" id="pasteHint"></span>
+      </div>
+      <p class="hint" style="margin:9px 0 0">
+        查完会<b>自动勾选未收录的</b>，已收录的置灰不可选——申请名额很稀缺，
+        不该花在已经收录的页面上。
+      </p>
+    </div>
   </div>
 
   <div class="card hide" id="jobCard">
@@ -298,10 +332,11 @@ ol.steps b{color:var(--text)}
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
         <th class="c"><input type="checkbox" id="thAll"></th>
-        <th>URL</th><th style="width:160px">Google 收录状态</th>
-        <th style="width:130px">本工具申请记录</th><th style="width:105px">上次查询</th>
+        <th>URL</th><th style="width:150px">所属站点</th>
+        <th style="width:150px">Google 收录状态</th>
+        <th style="width:120px">本工具申请记录</th><th style="width:100px">上次查询</th>
       </tr></thead>
-      <tbody id="pendBody"><tr><td colspan="5"><div class="empty">先扫描一次，或到「链接清单」看其他站点</div></td></tr></tbody>
+      <tbody id="pendBody"><tr><td colspan="6"><div class="empty">先扫描或粘贴一批链接，也可以到「链接清单」看其他站点</div></td></tr></tbody>
     </table></div></div>
     <p class="hint" id="pendMore" style="margin:9px 0 0"></p>
   </div>
@@ -1005,7 +1040,8 @@ $('#btnSubmitSitemap').onclick = async () => {
    一条从没申请过的页面完全可能本来就是收录的。 */
 const PEND_CHIPS = [
   ['all','全部'], ['not_indexed','未收录'], ['indexed','已收录'],
-  ['unknown','未查明'], ['req_no','未收录·从未申请'], ['req_yes','未收录·已申请'],
+  ['unknown','未查明'], ['offsite','判不出归属'],
+  ['req_no','未收录·从未申请'], ['req_yes','未收录·已申请'],
 ];
 let pendFilter = 'not_indexed';   // 默认只看未收录的，这才是需要处理的部分
 
@@ -1024,9 +1060,25 @@ async function loadPending(){
 }
 
 /* Google 的收录判定，这是"已收录"唯一依据 */
-function pendState(r){ return r.index_state || 'unknown'; }
-/* 已收录的不需要再申请，不允许勾选 */
-function pendSelectable(r){ return r.index_state !== 'indexed'; }
+function pendState(r){
+  // 判不出归属的单独成一类：它跟"查不到收录状态"是两回事，
+  // 混进"未查明"的话用户会以为再查一次就好了，实际要去改网址或加站点
+  if(r.state === 'offsite' || (r.site === '' && r.state)) return 'offsite';
+  return r.index_state || 'unknown';
+}
+/* 已收录的不需要再申请，不允许勾选。
+   判不出归属站点的也不能勾——没有站点就没法去 GSC 那个属性下点按钮，
+   放进去只会白跑一趟，还不如在界面上就说清楚。 */
+function pendSelectable(r){
+  return r.index_state !== 'indexed' && r.state !== 'offsite' && r.site !== '';
+}
+
+/* 表格里显示站点用短名：https://example.com/ → example.com。
+   完整地址太长会把 URL 那一列挤没了，鼠标悬停能看到全称。 */
+function shortSite(s){
+  return String(s || '').replace(/^sc-domain:/, '').replace(/^https?:\/\//, '')
+    .replace(/\/$/, '');
+}
 
 function renderPendChips(){
   const notIdx = S.pend.filter(r => pendState(r) === 'not_indexed');
@@ -1035,6 +1087,7 @@ function renderPendChips(){
     not_indexed: notIdx.length,
     indexed: S.pend.filter(r => pendState(r) === 'indexed').length,
     unknown: S.pend.filter(r => pendState(r) === 'unknown').length,
+    offsite: S.pend.filter(r => pendState(r) === 'offsite').length,
     req_no: notIdx.filter(r => !r.requested_at).length,
     req_yes: notIdx.filter(r => r.requested_at).length,
   };
@@ -1046,10 +1099,21 @@ function renderPendChips(){
     renderPendChips(); renderPend();
   });
   const w = S.webauto || {};
-  $('#scanPendSub').textContent =
-    `当前站点共 ${S.pend.length} 条链接：已收录 ${counts.indexed} 条、未收录 ${counts.not_indexed} 条`
+  const nSites = new Set(S.pend.map(r => r.site).filter(Boolean)).size;
+  /* 粘贴进来的链接可能横跨多个站点，此时"今日还剩 N 次"这个单站点数字
+     没有意义——名额是按站点各算一份的，说一个数字反而误导。 */
+  const multi = nSites > 1;
+  $('#scanPendSub').innerHTML =
+    (multi ? `共 ${S.pend.length} 条链接，横跨 <b>${nSites}</b> 个站点：`
+           : `当前站点共 ${S.pend.length} 条链接：`)
+    + `已收录 ${counts.indexed} 条、未收录 ${counts.not_indexed} 条`
     + (counts.unknown ? `、未查明 ${counts.unknown} 条` : '')
-    + `。今日本地还剩 ${w.left ?? '?'} 次申请名额（Google 真实上限未公开，可能提前撞上限流）。`;
+    + (counts.offsite ? `、<b style="color:var(--err)">判不出归属 ${counts.offsite} 条</b>` : '')
+    + '。'
+    + (multi
+        ? '申请名额<b>按站点各算一份</b>，所以跨站点提交等于同时用了好几个独立的额度桶，'
+          + '点「申请收录」时会逐站点列出会占用多少。'
+        : `今日本地还剩 ${w.left ?? '?'} 次申请名额（Google 真实上限未公开，可能提前撞上限流）。`);
   // 复查按钮上标出有多少条待复查
   const rb = $('#btnRecheck');
   if(rb){
@@ -1063,6 +1127,7 @@ function renderPendChips(){
 
 function visiblePend(){
   if(pendFilter === 'all') return S.pend;
+  if(pendFilter === 'offsite') return S.pend.filter(r => pendState(r) === 'offsite');
   if(pendFilter === 'req_no')
     return S.pend.filter(r => pendState(r) === 'not_indexed' && !r.requested_at);
   if(pendFilter === 'req_yes')
@@ -1072,7 +1137,8 @@ function visiblePend(){
 
 function renderPend(){
   const rows = visiblePend(), CAP = 300, shown = rows.slice(0, CAP);
-  const STATE_PILL = { indexed:['ok','已收录'], not_indexed:['never','未收录'], unknown:['unknown','未查明'] };
+  const STATE_PILL = { indexed:['ok','已收录'], not_indexed:['never','未收录'],
+                       unknown:['unknown','未查明'], offsite:['unknown','无法提交'] };
   $('#pendBody').innerHTML = shown.length ? shown.map(r => {
     const i = S.pend.indexOf(r);
     const st = pendState(r);
@@ -1083,8 +1149,12 @@ function renderPend(){
         ? `<input type="checkbox" data-i="${i}"${r.selected?' checked':''}>`
         : '<span class="hint" title="Google 已收录，无需再申请">—</span>'}</td>
       <td class="u">${esc(r.url)}</td>
+      <td class="u">${r.site
+        ? esc(shortSite(r.site))
+        : '<span class="tag err">判不出归属</span>'}</td>
       <td><span class="pill p-${cls}">${label}</span>
-        ${r.coverage ? '<div class="note">' + esc(r.coverage) + '</div>' : ''}</td>
+        ${r.coverage ? '<div class="note">' + esc(r.coverage) + '</div>' : ''}
+        ${r.note ? '<div class="note">' + esc(r.note) + '</div>' : ''}</td>
       <td>${r.requested_at
         ? `<span class="pill p-waiting">已申请 ${r.request_count} 次</span>`
           + (r.last_result && r.last_result !== 'success'
@@ -1092,7 +1162,7 @@ function renderPend(){
         : '<span class="hint">未申请</span>'}</td>
       <td class="num">${r.last_checked ? esc(localDate(r.last_checked)) : '—'}</td>
     </tr>`;
-  }).join('') : '<tr><td colspan="5"><div class="empty">该筛选下没有记录</div></td></tr>';
+  }).join('') : '<tr><td colspan="6"><div class="empty">该筛选下没有记录</div></td></tr>';
 
   $('#pendMore').textContent = rows.length > CAP
     ? `表格只显示前 ${CAP} 条，勾选与提交仍覆盖全部 ${rows.length} 条。` : '';
@@ -1130,18 +1200,137 @@ $('#thAll').onchange = e => {
   renderPend();
 };
 
+/* ---- 方式 B：直接粘贴链接（不用先选站点）---- */
+$('#btnPasteClear').onclick = () => {
+  $('#pasteUrls').value = ''; $('#pasteHint').textContent = '';
+};
+
+$('#btnPasteCheck').onclick = async () => {
+  const text = $('#pasteUrls').value.trim();
+  if(!text) return toast('先粘贴一些链接', 'err');
+  const btn = $('#btnPasteCheck'), was = btn.textContent;
+  btn.disabled = true; btn.textContent = '查询中…';
+  try{
+    /* auto:true 表示不指定站点、让后端逐条判定归属。
+       这是这个功能的核心——用户手里的链接可能横跨几十个站点，
+       让他先选站点再粘贴是本末倒置。 */
+    const { job_id } = await api('/api/analyze', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text, auto: true, inspect: true, force: true})});
+    $('#jobCard').scrollIntoView({behavior:'smooth', block:'nearest'});
+    watchJob(job_id, '查询粘贴的链接', j => {
+      const r = j.result || {};
+      if(r.error) return toast(r.error, 'err');
+      applyPasteResult(r);
+    });
+  }catch(e){ toast(e.message, 'err'); }
+  finally{ btn.disabled = false; btn.textContent = was; }
+};
+
+/* 把 analyze 的结果搬进第二步那张表，复用现有的勾选、筛选、提交流程。
+   判不出归属的也一并渲染进去（排最前面、标红、不可勾选），而不是只在
+   日志里提一句——放在日志里等于藏起来，用户会以为全都查好了。 */
+function applyPasteResult(r){
+  const st2idx = {pending:'not_indexed', indexed:'indexed', unknown:'unknown',
+                  recent:'not_indexed', offsite:'offsite'};
+  const rows = (r.rows || []).map(x => ({
+    url: x.url,
+    site: x.site || '',
+    index_state: st2idx[x.state] ?? 'unknown',
+    state: x.state,
+    coverage: x.coverage || '',
+    note: x.note || '',
+    requested_at: x.last_submitted || '',
+    request_count: x.submit_count || 0,
+    last_result: '',
+    last_checked: '',
+    // 查完自动勾选未收录的：名额稀缺，不该花在已经收录的页面上
+    selected: x.state === 'pending',
+  }));
+  // 判不出归属的排最前面，逼着人先看见它们
+  rows.sort((a, b) => (a.site ? 1 : 0) - (b.site ? 1 : 0));
+  S.pend = rows;
+  S.pasteResult = r;
+  pendFilter = 'all';
+  renderPendChips(); renderPend();
+  renderPasteSummary(r);
+  $('#pendChips').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function renderPasteSummary(r){
+  const sm = r.summary || {}, unk = r.unknown || [];
+  const el = $('#pasteHint');
+  el.innerHTML = `共 ${sm.deduped} 条（去重前 ${sm.raw}）·`
+    + ` 落在 <b>${sm.site_count || 0}</b> 个站点 · 未收录 <b>${sm.pending || 0}</b> 条`
+    + ` · 已收录 ${sm.indexed || 0} 条`
+    + (sm.unknown ? ` · 未查明 ${sm.unknown} 条` : '');
+
+  /* 判不出归属的必须醒目。这是最容易漏的地方：用户粘了 50 条，
+     其中 3 条域名打错了，如果只在日志里滚过去，他会以为 50 条都查了，
+     那 3 条就永远不会被处理。 */
+  const bn = $('#pasteAlert');
+  if(unk.length){
+    bn.className = 'banner err';
+    bn.innerHTML = `⚠️ <b>${unk.length} 条判不出属于你哪个站点，不会被提交</b>，`
+      + '需要你处理（已排在下面表格最前面）：<br>'
+      + unk.slice(0, 6).map(x => `<code>${esc(x.input || '')}</code> —— ${esc(x.reason_cn || pasteReasonCn(x))}`).join('<br>')
+      + (unk.length > 6 ? `<br>…… 还有 ${unk.length - 6} 条` : '');
+    bn.classList.remove('hide');
+  } else {
+    bn.className = 'banner ok';
+    bn.innerHTML = `✅ 全部 ${(r.rows || []).length} 条都判定出了归属站点，没有遗漏。`;
+    bn.classList.remove('hide');
+  }
+}
+
+function pasteReasonCn(x){
+  if(x.reason === 'typo')
+    return `你的 GSC 属性里没有 ${x.host}，但有 ${x.near_host}（只差 ${x.near_distance} 个字符）——很可能是网址打错了`;
+  if(x.reason === 'not_a_property')
+    return `${x.host} 不在你的任何 GSC 属性里，这个网站可能还没加进 Search Console`;
+  return '这一行解析不出合法网址';
+}
+
 $('#btnRequest').onclick = async () => {
-  const urls = selectedPend().map(r => r.url);
-  if(!urls.length) return;
-  const left = (S.webauto && S.webauto.left) ?? 0;
-  let msg = '将逐个打开浏览器，去 GSC 网页申请收录 ' + urls.length + ' 条。';
-  if(urls.length > left) msg += '\n\n注意：今日本地名额只剩 ' + left + ' 次，超出的会被跳过、留到明天。';
-  msg += '\n\n遇到验证码会立即整体停止。确定继续吗？';
+  const rows = selectedPend();
+  if(!rows.length) return;
+  // 每条都带自己的站点：选中的可能横跨多个站点，名额也是按站点分别算的
+  const items = rows.map(r => ({url: r.url, site: r.site || site()}));
+  const sites = [...new Set(items.map(x => x.site))];
+
+  /* 申请名额是按站点算的，所以提交前必须把"将影响哪些站点、各占几个名额"
+     摆出来。只说一句"选中 N 条"的话，用户不知道这一次会同时用掉
+     好几个站点当天的额度。 */
+  let quota = {};
+  try{
+    const r = await api('/api/webauto/quota', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sites})});
+    quota = r.quota || {};
+  }catch(e){ /* 拿不到就退化成不显示明细，不拦着提交 */ }
+
+  const lines = sites.map(st => {
+    const n = items.filter(x => x.site === st).length;
+    const q = quota[st];
+    const over = q && n > q.left ? `，⚠ 只剩 ${q.left} 个名额，超出的 ${n - q.left} 条会跳过` : '';
+    return `  · ${shortSite(st)}：本批 ${n} 条` + (q ? `（今日已用 ${q.used}/${q.limit}${over}）` : '');
+  });
+  const overTotal = sites.reduce((a, st) => {
+    const n = items.filter(x => x.site === st).length;
+    const q = quota[st];
+    return a + (q ? Math.max(0, n - q.left) : 0);
+  }, 0);
+
+  let msg = `将去 GSC 网页逐条申请收录 ${items.length} 条`
+    + (sites.length > 1 ? `，横跨 ${sites.length} 个站点：` : '：') + '\n' + lines.join('\n');
+  if(overTotal) msg += `\n\n其中 ${overTotal} 条会因为站点名额不足被跳过，留到明天再交。`;
+  msg += `\n\n串行执行、每条之间随机间隔几秒，${items.length} 条大约需要 `
+    + Math.ceil(items.length * 12 / 60) + ' 分钟。遇到验证码会立即整体停止。\n\n确定继续吗？';
   if(!confirm(msg)) return;
   try{
     const { job_id } = await api('/api/webauto/submit', {method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({site_url: site(), urls})});
+      body: JSON.stringify({items})});
     $('#jobCard').scrollIntoView({behavior:'smooth', block:'nearest'});
     watchJob(job_id, '申请收录中', j => {
       const r = j.result || {};

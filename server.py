@@ -443,9 +443,16 @@ def api_sitemap_list(site_url: str = ""):
 
 @app.post("/api/analyze")
 def api_analyze(body: dict = Body(...)):
+    """分析一批 URL：判定归属站点 + 查收录状态。
+
+    site_url 不传（或传 auto=true）时**自动判定每条 URL 属于哪个 GSC 属性**，
+    允许一次粘贴横跨几十个站点的链接——让用户先选站点再粘贴是本末倒置。
+    """
     text = body.get("text") or ""
     urls = body.get("urls") or []
-    site = (body.get("site_url") or cfg.site_url).strip()
+    # auto=true 时明确不带站点；否则沿用请求里的站点，最后才回落到配置
+    site = ("" if body.get("auto")
+            else (body.get("site_url") or cfg.site_url).strip())
     do_inspect = bool(body.get("inspect", True))
     force = bool(body.get("force", False))
     account = (body.get("account") or "").strip()
@@ -677,11 +684,26 @@ def api_recheck(body: dict = Body(...)):
 def api_webauto_submit(body: dict = Body(...)):
     """把选中的 URL 交给浏览器自动化，逐个去 GSC 网页点“请求编入索引”。"""
     urls = body.get("urls") or []
-    site = (body.get("site_url") or cfg.site_url).strip()
-    if not site:
-        return JSONResponse({"error": "请先选择站点"}, status_code=400)
-    if not urls:
-        return JSONResponse({"error": "没有要提交的 URL"}, status_code=400)
+    site = (body.get("site_url") or "").strip()
+    # items=[{url, site}] 允许一次提交横跨多个站点。名额是按站点算的，
+    # 所以跨站点提交等于同时动用了好几个独立的名额桶。
+    raw_items = body.get("items") or []
+    items: list[tuple[str, str]] = []
+    for it in raw_items:
+        u = (it.get("url") or "").strip()
+        st = (it.get("site") or "").strip()
+        if u and st:
+            items.append((st, u))
+
+    if not items:
+        site = site or cfg.site_url
+        if not site:
+            return JSONResponse({"error": "请先选择站点，或改用自动判定归属的提交方式"},
+                                status_code=400)
+        if not urls:
+            return JSONResponse({"error": "没有要提交的 URL"}, status_code=400)
+        items = [(site, u) for u in urls]
+
     if not webauto.has_session(cfg.webauto_session_path):
         return JSONResponse(
             {"error": "还没有浏览器登录，请先到「账号管理」完成一次浏览器登录"},
@@ -690,7 +712,7 @@ def api_webauto_submit(body: dict = Body(...)):
 
     def run(emit, stop_flag):
         return engine.webauto_submit(
-            site, urls, emit=emit, should_stop=stop_flag.is_set
+            site, [], items=items, emit=emit, should_stop=stop_flag.is_set
         )
 
     return {"job_id": start_job("webauto", run).id}
@@ -699,6 +721,23 @@ def api_webauto_submit(body: dict = Body(...)):
 @app.get("/api/webauto/status")
 def api_webauto_status(site_url: str = ""):
     return engine.webauto_overview(site_url or cfg.site_url)
+
+
+@app.post("/api/webauto/quota")
+def api_webauto_quota(body: dict = Body(...)):
+    """一次问多个站点的今日名额。
+
+    申请名额是**按站点**算的，跨站点提交前必须能把"将影响哪些站点、
+    各占几个名额"摆给用户看，否则他不知道这一次提交会同时动用多少个站点
+    当天的额度。
+    """
+    sites = [str(x).strip() for x in (body.get("sites") or []) if str(x).strip()]
+    limit = cfg.webauto_daily_limit
+    out = {}
+    for st in dict.fromkeys(sites):      # 去重且保序
+        used = store.webauto_used(st)
+        out[st] = {"used": used, "limit": limit, "left": max(0, limit - used)}
+    return {"quota": out, "limit": limit}
 
 
 @app.post("/api/webauto/login")
