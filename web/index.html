@@ -321,6 +321,7 @@ https://siteB.com/article
   <div class="card">
     <h2>第二步：挑几条去申请收录</h2>
     <p class="sub" id="scanPendSub">默认只显示未收录的。已收录的可切到「已收录」查看，但不能勾选。</p>
+    <p class="hint hide" id="pendSource" style="margin:0 0 10px"></p>
     <div class="chips" id="pendChips"></div>
     <div class="row" style="margin-bottom:11px">
       <button class="btn sm" id="selTop">按剩余名额自动勾选</button>
@@ -1052,12 +1053,66 @@ async function loadPending(){
     // 一次拿全量（不带 index_state 过滤），前端本地切换分类，避免每次点筛选都请求
     const r = await api('/api/links?site_url=' + encodeURIComponent(site()));
     S.pend = r.rows.map(x => ({...x, selected:false}));
+    S.pendSource = 'site';
     S.recheckPending = r.recheck_pending || 0;
     S.webauto = r.webauto;
     renderQuota();
     renderPendChips();
     renderPend();
+    renderPendSource();
   }catch(e){ toast('读取待办失败：' + e.message, 'err'); }
+}
+
+/* 一次操作结束后该刷新什么，取决于当前表格里装的是谁的链接。
+
+   以前一律调 loadPending()，也就是无条件去抓"右上角选中站点"的全部链接。
+   用户粘进来的那批可能横跨几十个站点，操作一结束就被单站点清单顶掉，
+   工作集没了，还平白多打一次跟他刚做的事无关的请求。 */
+async function refreshPend(){
+  if(S.pendSource !== 'paste') return loadPending();
+  try{
+    // 只把手上这批链接的最新状态取回来，原地更新，不动表格的组成
+    const urls = S.pend.map(r => r.url);
+    const r = await api('/api/links/lookup', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({urls})});
+    const byUrl = {};
+    (r.rows || []).forEach(x => byUrl[x.url] = x);
+    S.pend = S.pend.map(old => {
+      const fresh = byUrl[old.url];
+      if(!fresh) return old;
+      // 保留 site / note / rewritten 这些只有粘贴流程才知道的信息
+      return {...old, index_state: fresh.index_state, coverage: fresh.coverage,
+              verdict: fresh.verdict, last_checked: fresh.last_checked,
+              requested_at: fresh.requested_at, request_count: fresh.request_count,
+              last_result: fresh.last_result,
+              // 已收录的自动取消勾选：名额不该再花在它身上
+              selected: old.selected && fresh.index_state !== 'indexed'};
+    });
+    await loadWebautoStatus();
+    renderPendChips(); renderPend(); renderPendSource();
+  }catch(e){ toast('刷新失败：' + e.message, 'err'); }
+}
+
+/* 表格上方明确写出"现在看的是谁"，并给一个来回切的入口。
+   不写的话，用户粘完一批再点别处，会分不清表里到底是粘贴的还是站点的。 */
+function renderPendSource(){
+  const el = $('#pendSource');
+  if(!el) return;
+  if(S.pendSource === 'paste'){
+    const n = new Set(S.pend.map(r => r.site).filter(Boolean)).size;
+    el.innerHTML = `当前表格是<b>你粘贴的 ${S.pend.length} 条</b>`
+      + (n > 1 ? `（横跨 ${n} 个站点）` : '')
+      + ' · <button class="btn sm" id="pendBackToSite">改看当前站点的全部链接</button>';
+    el.classList.remove('hide');
+    const b = $('#pendBackToSite');
+    if(b) b.onclick = () => loadPending();
+  } else if(S.pasteResult){
+    el.innerHTML = `当前表格是<b>${shortSite(site())} 的全部链接</b>`
+      + ' · <button class="btn sm" id="pendBackToPaste">回到刚才粘贴的结果</button>';
+    el.classList.remove('hide');
+    const b = $('#pendBackToPaste');
+    if(b) b.onclick = () => applyPasteResult(S.pasteResult);
+  } else el.classList.add('hide');
 }
 
 /* Google 的收录判定，这是"已收录"唯一依据 */
@@ -1252,9 +1307,10 @@ function applyPasteResult(r){
   // 判不出归属的排最前面，逼着人先看见它们
   rows.sort((a, b) => (a.site ? 1 : 0) - (b.site ? 1 : 0));
   S.pend = rows;
+  S.pendSource = 'paste';
   S.pasteResult = r;
   pendFilter = 'all';
-  renderPendChips(); renderPend();
+  renderPendChips(); renderPend(); renderPendSource();
   renderPasteSummary(r);
   $('#pendChips').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
@@ -1354,7 +1410,7 @@ $('#btnRequest').onclick = async () => {
     watchJob(job_id, '申请收录中', j => {
       const r = j.result || {};
       toast(`结束：成功 ${r.ok||0} · 失败 ${r.failed||0} · 跳过 ${r.skipped||0}`, r.ok ? 'ok' : 'err');
-      loadPending();
+      refreshPend();
     }, {stoppable:true});
   }catch(e){ toast(e.message, 'err'); }
 };
@@ -1362,11 +1418,22 @@ $('#btnRequest').onclick = async () => {
 /* 复查：重新查 Google 现在到底收录了没。选中了就只查选中的，
    没选中就查"申请过但还没确认收录"的那批。只花查询配额，不动申请名额。 */
 $('#btnRecheck').onclick = async () => {
-  if(!site()) return toast('请先在顶部选择站点', 'err');
   const picked = selectedPend().map(r => r.url);
-  const body = { site_url: site(), account: S.acctFilter };
-  if(picked.length) body.urls = picked;
-  else if(!S.recheckPending) return toast('没有需要复查的链接。可以先勾选一些再点', 'err');
+  /* 勾选的这批可能横跨多个站点（粘贴进来的），这时候必须让后端逐条判定归属。
+     硬按右上角那个站点去查的话，其余站点的链接会全被当成"站外"排除掉，
+     然后报一句"未查明 N 条"——看起来像查询失败，其实是查错了属性。 */
+  const spansSites = new Set(selectedPend().map(r => r.site).filter(Boolean));
+  const auto = picked.length > 0
+    && (S.pendSource === 'paste' || spansSites.size > 1
+        || (spansSites.size === 1 && ![...spansSites][0].startsWith(site())));
+  const body = auto
+    ? { urls: picked, auto: true, account: S.acctFilter }
+    : { site_url: site(), account: S.acctFilter };
+  if(!auto){
+    if(!site()) return toast('请先在顶部选择站点，或先勾选要复查的链接', 'err');
+    if(picked.length) body.urls = picked;
+    else if(!S.recheckPending) return toast('没有需要复查的链接。可以先勾选一些再点', 'err');
+  }
   try{
     const { job_id } = await api('/api/recheck', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -1375,7 +1442,7 @@ $('#btnRecheck').onclick = async () => {
       const r = j.result || {};
       toast(`复查完成：新确认收录 ${r.newly_indexed||0} 条，仍未收录 ${r.still_not||0} 条`,
             r.newly_indexed ? 'ok' : null);
-      loadPending();
+      refreshPend();
     });
   }catch(e){ toast(e.message, 'err'); }
 };
@@ -1452,7 +1519,7 @@ $('#btnRecheckAll').onclick = async () => {
       const r = j.result || {};
       toast(`复查完成：新确认收录 ${r.newly_indexed||0} 条，仍未收录 ${r.still_not||0} 条`,
             r.newly_indexed ? 'ok' : null);
-      loadPending();
+      refreshPend();
       loadAllPending();
     });
   }catch(e){ toast(e.message, 'err'); }

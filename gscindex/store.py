@@ -361,6 +361,27 @@ class Store:
             )
             self.conn.commit()
 
+    def url_rows_by_url(self, urls: list[str]) -> list[dict]:
+        """按 URL 精确取这些链接的当前记录，顺序跟传入一致。
+
+        用来在一次操作之后**原地刷新用户手上那批链接**，而不是把整张表
+        换成"当前选中站点"的全部链接。用户粘进来的可能横跨几十个站点，
+        操作完就被单站点清单顶掉的话，他的工作集就没了。
+        """
+        if not urls:
+            return []
+        out: dict[str, dict] = {}
+        with self._lock:
+            # 分批查，避免 URL 很多时超过 SQLite 的变量上限
+            for i in range(0, len(urls), 400):
+                chunk = urls[i : i + 400]
+                q = ",".join("?" * len(chunk))
+                for r in self.conn.execute(
+                    f"SELECT * FROM site_urls WHERE url IN ({q})", chunk
+                ):
+                    out[r["url"]] = dict(r)
+        return [out[u] for u in urls if u in out]
+
     def url_row_state(self, url: str) -> str:
         """取一条链接当前记录的收录状态，没有记录返回 unknown。
 

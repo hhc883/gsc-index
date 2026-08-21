@@ -514,6 +514,18 @@ def api_links(
     }
 
 
+@app.post("/api/links/lookup")
+def api_links_lookup(body: dict = Body(...)):
+    """按 URL 精确查这些链接的当前状态。
+
+    用来在一次操作之后原地刷新用户手上那批链接。不能用
+    /api/links?site_url=… 代替：那个只返回单个站点的全部链接，
+    会把用户粘进来的跨站点工作集整个顶掉。
+    """
+    urls = [str(u).strip() for u in (body.get("urls") or []) if str(u).strip()]
+    return {"rows": store.url_rows_by_url(urls)}
+
+
 def _window_dates(w: int) -> dict:
     """这个窗口下 GSC 和 GA 各自实际查询的日期区间。
 
@@ -668,11 +680,18 @@ def api_recheck(body: dict = Body(...)):
     不传 urls 时默认复查"申请过、但还没确认收录"的那些。
     只花查询配额，不消耗申请名额。
     """
-    site = (body.get("site_url") or cfg.site_url).strip()
+    # auto=true 时不指定站点，让引擎逐条判定归属——手工勾选的那批链接
+    # 完全可能横跨多个站点，硬按某一个站点去查会把其余的全当"站外"排除掉，
+    # 然后报一句"未查明"，看起来像查询失败，其实是查错了属性。
+    auto = bool(body.get("auto"))
+    site = "" if auto else (body.get("site_url") or cfg.site_url).strip()
     urls = body.get("urls")
     account = (body.get("account") or "").strip()
-    if not site:
+    if not site and not auto:
         return JSONResponse({"error": "请先选择站点"}, status_code=400)
+    if auto and not urls:
+        return JSONResponse({"error": "自动判定归属时必须给出要复查的链接"},
+                            status_code=400)
 
     def run(emit, _stop):
         return engine.recheck(site, urls, account_name=account, emit=emit)
