@@ -283,6 +283,7 @@ ol.steps b{color:var(--text)}
       </p>
     </div>
 
+    <div class="banner hide" id="pasteFixed" style="margin-top:12px;margin-bottom:0"></div>
     <div class="banner hide" id="pasteAlert" style="margin-top:12px;margin-bottom:0"></div>
     <div class="subcard" style="margin-top:12px">
       <h3>方式 B · 直接粘贴链接<span class="tag ok" style="margin-left:7px">不用选站点</span></h3>
@@ -1150,7 +1151,7 @@ function renderPend(){
         : '<span class="hint" title="Google 已收录，无需再申请">—</span>'}</td>
       <td class="u">${esc(r.url)}</td>
       <td class="u">${r.site
-        ? esc(shortSite(r.site))
+        ? esc(shortSite(r.site)) + (r.rewritten ? '<div class="note">已自动改写</div>' : '')
         : '<span class="tag err">判不出归属</span>'}</td>
       <td><span class="pill p-${cls}">${label}</span>
         ${r.coverage ? '<div class="note">' + esc(r.coverage) + '</div>' : ''}
@@ -1240,6 +1241,7 @@ function applyPasteResult(r){
     state: x.state,
     coverage: x.coverage || '',
     note: x.note || '',
+    rewritten: !!x.rewritten,
     requested_at: x.last_submitted || '',
     request_count: x.submit_count || 0,
     last_result: '',
@@ -1258,7 +1260,7 @@ function applyPasteResult(r){
 }
 
 function renderPasteSummary(r){
-  const sm = r.summary || {}, unk = r.unknown || [];
+  const sm = r.summary || {}, unk = r.unknown || [], fx = r.fixed || [];
   const el = $('#pasteHint');
   el.innerHTML = `共 ${sm.deduped} 条（去重前 ${sm.raw}）·`
     + ` 落在 <b>${sm.site_count || 0}</b> 个站点 · 未收录 <b>${sm.pending || 0}</b> 条`
@@ -1268,6 +1270,20 @@ function renderPasteSummary(r){
   /* 判不出归属的必须醒目。这是最容易漏的地方：用户粘了 50 条，
      其中 3 条域名打错了，如果只在日志里滚过去，他会以为 50 条都查了，
      那 3 条就永远不会被处理。 */
+  /* 自动改写过的单独说一句。GSC 把 http/https、www/非 www 当成不同的属性，
+     所以这类链接必须改写成属性的写法才能提交——但改写了用户粘进来的东西，
+     就得让他看见改成了什么，不能悄悄换掉。 */
+  const fb = $('#pasteFixed');
+  if(fx.length){
+    fb.className = 'banner warn';
+    fb.innerHTML = `ℹ️ <b>${fx.length} 条已自动改写成你 GSC 属性的写法</b>`
+      + '（GSC 把 http/https、www/非 www 当成不同的属性，不改写没法提交）：<br>'
+      + fx.slice(0, 5).map(f => `<code>${esc(f.input)}</code><br>&nbsp;&nbsp;→ <code>${esc(f.fixed)}</code>`
+          + `　<span class="hint">${f.kind === 'scheme' ? '协议不同' : 'www 写法不同'}</span>`).join('<br>')
+      + (fx.length > 5 ? `<br>…… 还有 ${fx.length - 5} 条` : '');
+    fb.classList.remove('hide');
+  } else fb.classList.add('hide');
+
   const bn = $('#pasteAlert');
   if(unk.length){
     bn.className = 'banner err';
@@ -1286,6 +1302,9 @@ function renderPasteSummary(r){
 function pasteReasonCn(x){
   if(x.reason === 'typo')
     return `你的 GSC 属性里没有 ${x.host}，但有 ${x.near_host}（只差 ${x.near_distance} 个字符）——很可能是网址打错了`;
+  if(x.reason === 'path_outside')
+    return `主机名对得上属性 ${x.near_site}，但这条链接的路径不在它的前缀范围内`
+      + '——网址前缀属性只覆盖该前缀下的页面';
   if(x.reason === 'not_a_property')
     return `${x.host} 不在你的任何 GSC 属性里，这个网站可能还没加进 Search Console`;
   return '这一行解析不出合法网址';

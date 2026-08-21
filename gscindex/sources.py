@@ -149,7 +149,29 @@ def _host_distance(a: str, b: str, cap: int = 2) -> int:
     return prev[-1]
 
 
-def match_sites(urls: list[str], site_urls: list[str]) -> tuple[dict[str, list[str]], list[dict]]:
+def _retarget(url: str, site_url: str) -> str | None:
+    """把 URL 的协议和主机名换成某个 GSC 属性的，路径查询原样保留。
+
+    专治"http:// 对 https:// 属性"和"www. 对非 www 属性"这两类：
+    GSC 的网址前缀属性是**按字符串前缀**匹配的，https://example.com/ 这个属性
+    压根不覆盖 http://example.com/page，www 和非 www 也是两回事。
+    但用户粘一条 http 链接时，意图毫无疑问是他自己那个 https 站点——
+    这种情况自动改写成属性的写法，比丢给他一句"不属于任何站点"有用得多。
+    """
+    if site_url.startswith("sc-domain:"):
+        return None                      # 域名属性本来就不挑协议和子域，走不到这里
+    try:
+        pu, ps = urlparse(url), urlparse(site_url)
+    except ValueError:
+        return None
+    if not ps.scheme or not ps.netloc:
+        return None
+    return urlunparse((ps.scheme, ps.netloc, pu.path or "/", pu.params, pu.query, ""))
+
+
+def match_sites(
+    urls: list[str], site_urls: list[str]
+) -> tuple[dict[str, list[str]], list[dict], list[dict]]:
     """把一堆 URL 按所属 GSC 属性分组，返回 ({属性: [URL...]}, 判不出归属的)。
 
     这是"粘贴任意链接、不用先选站点"的基础：用户手里的链接可能横跨几十个站点，
@@ -164,6 +186,10 @@ def match_sites(urls: list[str], site_urls: list[str]) -> tuple[dict[str, list[s
 
     判不出归属的**逐条给原因**，绝不静默丢掉。少提交一条是小事，
     但用户以为交上去了、实际被悄悄扔了，就会一直等一个不会来的结果。
+
+    返回第三项是"自动改写过的"清单：主机名对得上、只是协议或 www 写法跟属性
+    不一致的，会改写成属性的写法并记在这里，供界面明确告知——改写了用户粘进来的
+    东西就必须说出来，不能悄悄换掉。
     """
     # (属性, 匹配函数, 前缀长度) —— 前缀长度用来在多个匹配里挑最具体的
     specs = []
@@ -177,6 +203,7 @@ def match_sites(urls: list[str], site_urls: list[str]) -> tuple[dict[str, list[s
 
     groups: dict[str, list[str]] = {}
     unknown: list[dict] = []
+    fixed: list[dict] = []
 
     for raw in urls:
         u = normalize(raw)
@@ -190,13 +217,43 @@ def match_sites(urls: list[str], site_urls: list[str]) -> tuple[dict[str, list[s
             groups.setdefault(hit[0][0], []).append(u)
             continue
 
-        # 没落进任何属性。是打错了字，还是这个站真的没加进 Search Console？
         h = _norm_host(urlparse(u).netloc)
+
+        # 主机名对得上某个属性，却没匹配上 —— 这不是打错字，别往那边归因。
+        # 三种可能：协议不同（http vs https）、www 写法不同、路径不在前缀范围内。
+        # 前两种能自动改写，第三种改不了，得说清楚是路径的问题。
+        same_host = [(site, plen) for site, fn, plen in specs
+                     if _norm_host(host_of(site)) == h]
+        if same_host:
+            same_host.sort(key=lambda x: x[1], reverse=True)
+            done = False
+            for site, _plen in same_host:
+                alt = _retarget(u, site)
+                if not alt or alt == u:
+                    continue
+                fn = next(f for st, f, _pl in specs if st == site)
+                if fn(alt):
+                    groups.setdefault(site, []).append(alt)
+                    fixed.append({"input": u, "fixed": alt, "site": site,
+                                  "kind": ("scheme"
+                                           if urlparse(u).scheme != urlparse(site).scheme
+                                           else "www")})
+                    done = True
+                    break
+            if done:
+                continue
+            unknown.append({"input": u, "host": h, "reason": "path_outside",
+                            "near_site": same_host[0][0]})
+            continue
+
+        # 主机名也对不上。是打错了字，还是这个站真的没加进 Search Console？
+        # 距离必须 >= 1：距离 0 说明主机名相同，上面那一支已经处理过，
+        # 说"只差 0 个字符"是句废话，只会让人一头雾水。
         near, near_d = "", 99
         if len(h) >= 8:
             for cand in hosts:
                 d = _host_distance(h, cand)
-                if d < near_d:
+                if 1 <= d < near_d:
                     near, near_d = cand, d
         if near and near_d <= 2:
             unknown.append({"input": u, "host": h, "reason": "typo",
@@ -205,7 +262,7 @@ def match_sites(urls: list[str], site_urls: list[str]) -> tuple[dict[str, list[s
         else:
             unknown.append({"input": u, "host": h, "reason": "not_a_property"})
 
-    return groups, unknown
+    return groups, unknown, fixed
 
 
 # --------------------------------------------------------------------------

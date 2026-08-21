@@ -203,6 +203,16 @@ def cmd_inspect(args) -> None:
         site = _short_site(r.get("site")) if auto else ""
         print(f"[{r['verdict'] or '?':>7}] {r['coverage'] or r['state_cn']:<16} "
               + (f"{site:<24} " if auto else "") + r["url"])
+    fx = res.get("fixed") or []
+    if fx:
+        # 改写了用户给的东西就必须说出来
+        print()
+        print(f"ℹ  {len(fx)} 条已自动改写成属性的写法"
+              "（GSC 把 http/https、www/非 www 当成不同属性）：")
+        for f in fx:
+            print(f"   {f['input']}")
+            print(f"   → {f['fixed']}   ["
+                  + ("协议不同" if f["kind"] == "scheme" else "www 写法不同") + "]")
     unk = res.get("unknown") or []
     if unk:
         # 判不出归属的单独列在最后并说明原因，不能混在上面一大片里滚过去
@@ -219,10 +229,13 @@ def _short_site(s: str) -> str:
 
 
 def _unknown_cn(x: dict) -> str:
-    if x.get("reason") == "typo":
+    r = x.get("reason")
+    if r == "typo":
         return (f"你的属性里没有 {x.get('host')}，但有 {x.get('near_host')}"
                 f"（差 {x.get('near_distance')} 个字符），很可能打错了")
-    if x.get("reason") == "not_a_property":
+    if r == "path_outside":
+        return (f"主机名对得上属性 {x.get('near_site')}，但路径不在它的前缀范围内")
+    if r == "not_a_property":
         return f"{x.get('host')} 不在你的任何 GSC 属性里"
     return "解析不出合法网址"
 

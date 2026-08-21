@@ -53,6 +53,10 @@ def _unknown_reason_cn(x: dict) -> str:
     if r == "typo":
         return (f"你的 GSC 属性里没有 {x.get('host')}，但有 {x.get('near_host')}"
                 f"（只差 {x.get('near_distance')} 个字符）——很可能是网址打错了。")
+    if r == "path_outside":
+        return (f"主机名对得上属性 {x.get('near_site')}，但这条链接的路径不在它的"
+                f"前缀范围内。网址前缀属性只覆盖该前缀下的页面——要么在 Search Console "
+                f"里加一个覆盖这条路径的属性，要么确认这个网址是否正确。")
     if r == "not_a_property":
         return (f"{x.get('host')} 不在你的任何 GSC 属性里。这个网站可能还没加进 "
                 f"Search Console，加进去并验证之后才能申请收录。")
@@ -307,6 +311,8 @@ class Engine:
 
         auto = not (site_url or "").strip()
         rows: dict[str, dict] = {}
+        note_of: dict[str, str] = {}      # URL -> 额外说明（目前只有自动改写）
+        fixed: list[dict] = []
         # 站点 -> 该站点下待预检的 URL。单站点模式也走这条路，只是只有一个键，
         # 这样下游预检、汇总逻辑不用分叉。
         per_site: dict[str, list[str]] = {}
@@ -319,10 +325,38 @@ class Engine:
                 msg = "拿不到你的 GSC 属性列表，无法自动判定链接归属。请检查凭据。"
                 emit({"type": "log", "level": "error", "message": msg})
                 return {"error": msg, "summary": {}, "rows": [], "unknown": []}
-            groups, unknown = sources.match_sites(urls, all_sites)
+            groups, unknown, fixed = sources.match_sites(urls, all_sites)
             for st, us in groups.items():
                 for u in us:
                     site_of[u] = st
+            # 自动改写过的（http→https、去掉 www）要把原始输入换成改写后的，
+            # 否则后面按 urls 取行会找不到，而且改写了用户粘进来的东西必须说出来
+            if fixed:
+                fixmap = {f["input"]: f for f in fixed}
+                urls = [fixmap[u]["fixed"] if u in fixmap else u for u in urls]
+                # 改写后可能撞车：http://x/a 和 https://x/a 会变成同一条。
+                # 不再去一次重的话 ordered 会把它列两遍，提交也会重复占名额。
+                before = len(urls)
+                urls = sources.dedupe(urls)
+                if len(urls) < before:
+                    emit({"type": "log", "level": "info",
+                          "message": f"改写后有 {before - len(urls)} 条与已有链接重复，已合并"})
+                for f in fixed:
+                    note_of[f["fixed"]] = (
+                        f"已自动改写：你粘的是 {f['input'][:60]}"
+                        + ("…" if len(f["input"]) > 60 else "")
+                        + f"，而这个站点的 GSC 属性是 {f['site']}"
+                        + ("（协议不同，GSC 把 http 和 https 当两个属性）"
+                           if f["kind"] == "scheme"
+                           else "（www 写法不同，GSC 把它们当两个属性）")
+                    )
+                emit({"type": "log", "level": "warn",
+                      "message": f"{len(fixed)} 条已自动改写成属性的写法"
+                                 f"（{'、'.join('http→https' if f['kind'] == 'scheme' else '去掉 www' for f in fixed[:3])}"
+                                 + (" 等" if len(fixed) > 3 else "") + "）"})
+                for f in fixed:
+                    emit({"type": "log", "level": "info",
+                          "message": f"  {f['input']} → {f['fixed']}"})
             emit({"type": "log", "level": "info",
                   "message": f"自动判定归属：{sum(len(v) for v in groups.values())} 条落在 "
                              f"{len(groups)} 个站点"
@@ -349,7 +383,8 @@ class Engine:
                 "last_submitted": hist["last_submitted"] if hist else "",
                 "submit_count": hist["submit_count"] if hist else 0,
                 "selected": True,
-                "note": "",
+                "note": note_of.get(u, ""),
+                "rewritten": u in note_of,
             }
             if not st:
                 row.update(
@@ -441,7 +476,7 @@ class Engine:
             }
         )
         return {"summary": summary, "rows": ordered, "site_url": site_url,
-                "auto": auto, "unknown": unknown,
+                "auto": auto, "unknown": unknown, "fixed": fixed,
                 "sites": sorted(by_site.values(), key=lambda x: -x["pending"])}
 
     def _inspect_many(
