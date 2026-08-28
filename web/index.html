@@ -530,6 +530,7 @@ https://siteB.com/article
     <h2>筛选与排行</h2>
     <p class="sub" id="trSub">按指标筛出达标的站点。比如「GSC 曝光量 ≥ 1000」。</p>
     <div class="row" style="margin-bottom:12px">
+      <select id="fCat" title="按站点分类筛选"><option value="">全部分类</option></select>
       <select id="fMetric">
         <option value="impressions">GSC 曝光量</option>
         <option value="clicks">GSC 点击量</option>
@@ -557,10 +558,12 @@ https://siteB.com/article
         <span class="hint">各列显示"未拉取"，不会以 0 混进"零流量"的结果里</span></label>
     </div>
     <div class="banner hide" id="trNever"></div>
+    <div class="hint hide" id="trCatSum" style="margin:0 0 11px"></div>
     <p class="hint" id="trDates" style="margin:0 0 9px"></p>
     <div class="tbox"><div class="tscroll"><table>
       <thead><tr>
         <th data-sort="site">站点</th>
+        <th data-sort="category" style="width:82px">分类</th>
         <th data-sort="impressions" style="width:92px"
             title="GSC 曝光量，即 Google 官方界面里的「展示次数」——你的页面在搜索结果里被看到的次数">GSC 曝光</th>
         <th data-sort="clicks" style="width:88px">GSC 点击</th>
@@ -575,7 +578,7 @@ https://siteB.com/article
         <th data-sort="updated_at" style="width:100px">更新时间</th>
         <th style="width:70px"></th>
       </tr></thead>
-      <tbody id="trBody"><tr><td colspan="12"><div class="empty">先点上面「拉取全部站点」</div></td></tr></tbody>
+      <tbody id="trBody"><tr><td colspan="13"><div class="empty">先点上面「拉取全部站点」</div></td></tr></tbody>
     </table></div></div>
     <p class="hint" id="trCount" style="margin:9px 0 0"></p>
   </div>
@@ -594,6 +597,35 @@ https://siteB.com/article
       <tbody id="trDetailBody"></tbody>
     </table></div></div>
     <p class="hint" id="trDetailNote" style="margin:9px 0 0"></p>
+  </div>
+
+  <div class="card" id="clsCard">
+    <div class="row" style="align-items:baseline">
+      <h2 style="margin:0">站点分类</h2>
+      <span class="hint">抓各站点首页判断类目。访问的是<b>你自己的网站</b>，不消耗任何 Google 配额。</span>
+    </div>
+    <div class="banner hide" id="clsAlert" style="margin-top:11px"></div>
+    <div class="row" style="margin:11px 0">
+      <button class="btn primary" id="btnClsFetch">抓首页并给建议</button>
+      <input type="text" id="clsDir" placeholder="分类目录路径，如 D:\站点信息"
+             style="flex:1;min-width:230px">
+      <button class="btn" id="btnClsImport">从目录导入</button>
+      <button class="btn" id="btnClsSave">保存分类</button>
+      <button class="btn sm" id="clsOnlyBad">只看需处理的</button>
+      <span class="hint" id="clsHint"></span>
+    </div>
+    <p class="hint" style="margin:0 0 10px">
+      目录结构应为「<code>分类名/站点名</code>」两层。<b>导入是一次性快照</b>——
+      之后你在目录里挪动文件夹，工具不会自动同步，要再点一次导入。
+    </p>
+    <div class="tbox"><div class="tscroll"><table>
+      <thead><tr>
+        <th style="width:78px">状态</th><th style="width:200px">站点</th>
+        <th style="width:108px">分类</th><th>首页标题</th><th style="width:170px">依据</th>
+      </tr></thead>
+      <tbody id="clsBody"><tr><td colspan="5"><div class="empty">点「抓首页并给建议」开始</div></td></tr></tbody>
+    </table></div></div>
+    <p class="hint" id="clsNote" style="margin:9px 0 0"></p>
   </div>
 
   <div class="card hide" id="gaMapCard">
@@ -755,7 +787,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const S = {
   cfg:{}, quota:null, webauto:null, sites:[], acctFilter:'',
   pend:[], allPend:[], oauth:null, currentJob:null, recheckPending:0,
-  traffic:[], trafficExtra:[], trafficWindow:28, trSite:null, trDetail:'pages', gaMap:null,
+  cls:null, clsDirty:null, traffic:[], trafficExtra:[], trafficWindow:28, trSite:null, trDetail:'pages', gaMap:null,
 };
 
 async function api(path, opts){
@@ -792,7 +824,7 @@ $$('.tab').forEach(t => t.onclick = () => {
   if(t.dataset.p === 'stats') loadStats();
   if(t.dataset.p === 'accounts'){ loadAccounts(); loadOauthStatus(); }
   if(t.dataset.p === 'pending') loadAllPending();
-  if(t.dataset.p === 'traffic') loadTraffic();
+  if(t.dataset.p === 'traffic'){ loadTraffic(); if(!S.cls) loadClassify(); }
 });
 
 /* ---------------- 顶栏状态 ---------------- */
@@ -1873,6 +1905,55 @@ function renderNeverFetched(never, r){
   el.classList.remove('hide');
 }
 
+/* 分类下拉。带上每个分类当前有多少个站点——空分类留在列表里但标 0，
+   这样一眼能看出哪些方向还没布局，而不是让它们凭空消失。 */
+function renderCatOptions(r){
+  const sel = $('#fCat'), cur = sel.value;
+  const cats = (S.cls && S.cls.categories) || [];
+  /* 只数**这个窗口里实际有的**站点。site_category 里还有主表带进来的、
+     还没加进 GSC 的站点，全算上的话下拉里的数字会大于表格行数。 */
+  const inWin = new Set([...(r.sites_in_window || []),
+                         ...[...document.querySelectorAll('#site option')]
+                              .map(o => o.value).filter(Boolean)]);
+  const cnt = {};
+  inWin.forEach(x => { const c = (r.site_category || {})[x]; if(c) cnt[c] = (cnt[c] || 0) + 1; });
+  const none = [...inWin].filter(x => !(r.site_category || {})[x]).length;
+  const opts = ['<option value="">全部分类</option>']
+    .concat(cats.map(c => `<option value="${esc(c)}">${esc(c)}（${cnt[c] || 0}）</option>`));
+  if(none) opts.push(`<option value="__none__">未分类（${none}）</option>`);
+  sel.innerHTML = opts.join('');
+  sel.value = cur;
+  if(sel.value !== cur) sel.value = '';    // 选中的分类没了就退回全部
+}
+
+/* 各分类汇总。这是"按分类管理"最直接的产出：哪一类整体在涨、哪一类还没起来。
+   只统计**真正拉到过数据**的站点，注入的"未拉取"占位行不参与——
+   否则合计会把没查过的当成 0 算进去，得出的结论是错的。 */
+function renderCatSummary(r){
+  const el = $('#trCatSum'); if(!el) return;
+  const rows = (S.traffic || []).filter(x => !x.never);
+  if(!rows.length || $('#fCat').value){ el.classList.add('hide'); return; }
+  const g = {};
+  rows.forEach(x => {
+    const k = x.category || '未分类';
+    const b = g[k] || (g[k] = {n: 0, imp: 0, clk: 0, ses: 0, gaN: 0});
+    b.n++;
+    if(x.gsc_ok){ b.imp += x.impressions || 0; b.clk += x.clicks || 0; }
+    if(x.ga_ok){ b.ses += x.sessions || 0; b.gaN++; }
+  });
+  const items = Object.entries(g).sort((a, b) => b[1].imp - a[1].imp);
+  el.innerHTML = '<b>按分类汇总</b>（' + winCn(S.trafficWindow) + '）：'
+    + '<div class="tbox" style="margin-top:7px"><div class="tscroll" style="max-height:230px"><table>'
+    + '<thead><tr><th>分类</th><th style="width:70px">站点数</th>'
+    + '<th style="width:100px">GSC 曝光</th><th style="width:90px">GSC 点击</th>'
+    + '<th style="width:100px">GA 会话</th></tr></thead><tbody>'
+    + items.map(([k, b]) => `<tr><td>${esc(k)}</td><td class="num">${b.n}</td>`
+        + `<td class="num">${nfmt(b.imp)}</td><td class="num">${nfmt(b.clk)}</td>`
+        + `<td class="num">${b.gaN ? nfmt(b.ses) : '<span class="hint">—</span>'}</td></tr>`).join('')
+    + '</tbody></table></div></div>';
+  el.classList.remove('hide');
+}
+
 /* 空表必须说清是哪一种空：本窗口没拉过、这个指标没数据、还是阈值真的没人达到。
    只写"没有符合条件的站点"会让人以为功能坏了。 */
 function emptyWhy(r, filtered){
@@ -1903,7 +1984,7 @@ const nfmt = v => v == null ? '0' : Number(v).toLocaleString('zh-CN');
 /* 点表头排序。默认方向按指标本身的"好"的方向来：平均排名越小越好所以升序，
    跳出率越低越好所以升序，其余（曝光、点击、会话、浏览量、事件数）都是越大越好、降序。
    一上来就给出符合直觉的排列，省掉一次多余的点击。 */
-const SORT_ASC_FIRST = new Set(['site', 'position', 'bounce_rate']);
+const SORT_ASC_FIRST = new Set(['site', 'category', 'position', 'bounce_rate']);
 
 function sortTraffic(rows){
   const s = S.trSort;
@@ -1912,6 +1993,8 @@ function sortTraffic(rows){
   const okOf = x => (GA_METRICS.has(s.col) ? x.ga_ok : x.gsc_ok);
   return rows.slice().sort((a, b) => {
     if(s.col === 'site') return sign * String(a.site).localeCompare(String(b.site));
+    if(s.col === 'category')
+      return sign * String(a.category || '￿').localeCompare(String(b.category || '￿'));
     if(s.col === 'updated_at')
       return sign * String(a.updated_at || '').localeCompare(String(b.updated_at || ''));
     /* 没拉到数据的行一律沉底，无论升序降序——否则升序时一堆"—"占满开头，
@@ -1937,13 +2020,24 @@ function renderTraffic(r, filtered){
   if(filtered && r.metric && (!S.trSort || S.trSort.byFilter))
     S.trSort = {col: r.metric, dir: SORT_ASC_FIRST.has(r.metric) ? 'asc' : 'desc',
                 byFilter: true};
+  // 把分类贴到每一行上。分类筛选和排序都在本地做，不用再打一次请求。
+  const catMap = r.site_category || {};
+  (S.traffic || []).forEach(x => x.category = catMap[x.site] || '');
+  renderCatOptions(r);
+  const pickCat = $('#fCat').value;
+  if(pickCat)
+    S.traffic = S.traffic.filter(x => (pickCat === '__none__' ? !x.category
+                                                             : x.category === pickCat));
   const never = neverFetched(r);
   /* 注入的"从没拉过"行必须跟真实结果分开存。混进 S.traffic 的话
      "命中 N 个站点"会把它们一起算进去——筛「曝光 ≥ 1000」时显示"命中 71 个"，
      而真正达标的只有 3 个，这个数字就是假的。 */
   S.traffic = sortTraffic(S.traffic);
   S.trafficExtra = ($('#fUnfetched').checked && never.length)
-    ? unfetchedRows(never).sort((a, b) => a.site.localeCompare(b.site))
+    ? unfetchedRows(never).map(x => ({...x, category: catMap[x.site] || ''}))
+        .filter(x => !pickCat || (pickCat === '__none__' ? !x.category
+                                                        : x.category === pickCat))
+        .sort((a, b) => a.site.localeCompare(b.site))
     : [];
   renderSortHeads();
   const hits = S.traffic.length;              // 真正参与筛选并命中的
@@ -1962,6 +2056,8 @@ function renderTraffic(r, filtered){
   $('#trBody').innerHTML = rows.length ? rows.map(x => `<tr${x.never ? ' data-never="1"' : ''}>
     <td class="u">${esc(x.site)}${x.never
       ? '<div class="note">这个窗口从没拉过</div>' : ''}</td>
+    <td>${x.category ? esc(x.category)
+      : '<span class="hint" title="到下面「站点分类」卡片处理">未分类</span>'}</td>
     <td class="num">${x.gsc_ok ? nfmt(x.impressions) : '<span class="hint">未拉取</span>'}</td>
     <td class="num">${x.gsc_ok ? nfmt(x.clicks) : '—'}</td>
     <td class="num">${x.gsc_ok && x.ctr != null ? (x.ctr*100).toFixed(2) + '%' : '—'}</td>
@@ -1975,11 +2071,12 @@ function renderTraffic(r, filtered){
     <td class="num">${x.updated_at ? esc(localDate(x.updated_at)) : '—'}</td>
     <td><button class="btn sm" data-tr-go="${esc(x.site)}">详情</button></td>
   </tr>`).join('')
-    : `<tr><td colspan="12"><div class="empty">${emptyWhy(r, filtered)}</div></td></tr>`;
+    : `<tr><td colspan="13"><div class="empty">${emptyWhy(r, filtered)}</div></td></tr>`;
 
   renderWindowHint();
   renderDates(r);
   renderNeverFetched(never, r);
+  renderCatSummary(r);
   const stale = staleToday(r);
   if(stale.length){
     $('#trCount').innerHTML = `<b>其中 ${stale.length} 个站点的「今日」数据是之前某天拉的</b>，`
@@ -2077,6 +2174,7 @@ $('#btnRtAll').onclick = () => loadRealtime(true);
 $('#btnFilter').onclick = () => loadTraffic(true);
 $('#btnFilterClear').onclick = () => loadTraffic(false);
 $('#fUnfetched').onchange = () => loadTraffic(false);
+$('#fCat').onchange = () => loadTraffic(S.trafficFiltered);
 $('#trWindow').onchange = () => loadTraffic(false);
 
 $('#btnTrRefreshAll').onclick = async () => {
@@ -2205,10 +2303,140 @@ async function renderTrDetail(){
 $('#expTraffic').onclick = () => {
   if(!S.traffic.length) return toast('没有可导出的数据', 'err');
   download('站点流量.csv', toCsv(S.traffic,
-    [['站点','site'],['GSC曝光','impressions'],['GSC点击','clicks'],['点击率','ctr'],
+    [['站点','site'],['分类','category'],['GSC曝光','impressions'],['GSC点击','clicks'],['点击率','ctr'],
      ['平均排名','position'],['GA会话','sessions'],['GA用户','users'],
      ['GA浏览量','views'],['GA事件数','events'],['跳出率','bounce_rate'],
      ['更新时间','updated_at']]));
+};
+
+/* ---------------- 站点分类 ---------------- */
+/* 分类的来源标签。跟下面日志页那个 SRC_CN 不是一回事，别混用。 */
+const CLS_SRC_CN = {import: ['ok', '已导入'], manual: ['ok', '人工指定'],
+                    rule: ['warn', '规则建议']};
+
+async function loadClassify(){
+  try{
+    S.cls = await api('/api/classify?account=' + encodeURIComponent(S.acctFilter || ''));
+    renderClassify();
+  }catch(e){ toast('读取分类失败：' + e.message, 'err'); }
+}
+
+function renderClassify(){
+  const r = S.cls; if(!r) return;
+  const rows = r.rows || [];
+  const cats = r.categories || [];
+  const un = r.uncategorized || [], byRule = r.by_rule || [];
+
+  $('#clsBody').innerHTML = rows.length ? rows.map(x => {
+    const [cls, cn] = CLS_SRC_CN[x.source] || ['err', '未分类'];
+    const bad = !x.category;
+    return `<tr${bad ? ' data-bad="1"' : ''}${x.source === 'rule' ? ' data-review="1"' : ''}>
+      <td><span class="tag ${cls}">${cn}</span></td>
+      <td class="u">${esc(shortSite(x.site))}</td>
+      <td><select class="clsPick" data-site="${esc(x.site)}" style="width:96px">
+        <option value=""${x.category ? '' : ' selected'}>未分类</option>
+        ${cats.map(c => `<option value="${esc(c)}"${c === x.category ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+      </select></td>
+      <td>${x.fetch_ok ? esc(x.title || '（无标题）')
+        : `<span class="hint">抓不到首页：${esc(x.fetch_msg || '未知')}</span>`}</td>
+      <td class="hint">${x.source === 'rule' && x.matched_on
+        ? '命中 ' + esc(x.matched_on) : (x.source === 'import' ? '来自目录' :
+           x.source === 'manual' ? '你指定的' : '—')}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="5"><div class="empty">还没有数据</div></td></tr>';
+
+  /* 未分类和"仅凭规则猜的"都要醒目。规则建议不是结论——它只在没有权威来源时
+     兜底，不标出来的话用户会把猜测当成已确认的事实，后面所有按分类做的
+     筛选和汇总都会带着这个错误。 */
+  const al = $('#clsAlert');
+  if(un.length || byRule.length){
+    al.className = 'banner ' + (un.length ? 'err' : 'warn');
+    al.innerHTML = (un.length
+        ? `⚠️ <b>${un.length} 个站点还没有分类</b>，它们不会出现在任何按分类的筛选和汇总里：`
+          + `<br>${un.slice(0,6).map(x => esc(shortSite(x))).join('、')}`
+          + (un.length > 6 ? ` …… 等 ${un.length} 个` : '') + '<br>'
+        : '')
+      + (byRule.length
+        ? `<b>${byRule.length} 个站点的分类是关键词规则猜的，建议你核对一遍</b>`
+          + `（表格里标「规则建议」的那些，依据列写了命中哪个词）：`
+          + `<br>${byRule.slice(0,6).map(x => esc(shortSite(x))).join('、')}`
+          + (byRule.length > 6 ? ` …… 等 ${byRule.length} 个` : '')
+        : '');
+    al.classList.remove('hide');
+  } else {
+    al.className = 'banner ok';
+    al.innerHTML = `✅ ${rows.length} 个站点全部有分类，且都来自目录导入或你的人工指定。`;
+    al.classList.remove('hide');
+  }
+
+  /* 两个数字都给：GSC 里的（表格里能看到的）和主表里的（含还没建站的）。
+     只给后者的话，界面写"汽车 51"而表里只有 14 行，看着像漏了 37 个。 */
+  const c = r.counts || {}, ca = r.counts_all || {};
+  const extra = Object.values(ca).reduce((a, b) => a + b, 0)
+              - Object.values(c).reduce((a, b) => a + b, 0);
+  $('#clsNote').innerHTML = '各分类在 GSC 里的站点数：'
+    + cats.map(x => c[x] ? `<b>${esc(x)} ${c[x]}</b>`
+        + (ca[x] > c[x] ? `<span class="hint">/${ca[x]}</span>` : '')
+      : `<span class="hint">${esc(x)} ${ca[x] ? '0/' + ca[x] : '0'}</span>`).join(' · ')
+    + (extra > 0 ? `<br><span class="hint">斜杠后面是主表里的总数。另有 <b>${extra}</b> `
+        + '个站点已在主表里分好类、但还没加进 Search Console，'
+        + '等它们进来时分类是现成的。</span>' : '');
+
+  $$('#clsBody .clsPick').forEach(sel => sel.onchange = () => {
+    S.clsDirty = S.clsDirty || {};
+    S.clsDirty[sel.dataset.site] = sel.value;
+    $('#clsHint').textContent = `有 ${Object.keys(S.clsDirty).length} 处改动还没保存`;
+  });
+}
+
+$('#clsOnlyBad').onclick = () => {
+  const on = $('#clsOnlyBad').classList.toggle('on');
+  $$('#clsBody tr').forEach(tr =>
+    tr.classList.toggle('hide', on && !tr.dataset.bad && !tr.dataset.review));
+  $('#clsOnlyBad').textContent = on ? '看全部' : '只看需处理的';
+};
+
+$('#btnClsFetch').onclick = async () => {
+  try{
+    const { job_id } = await api('/api/classify/fetch', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({account: S.acctFilter})});
+    $('.tab[data-p="scan"]').click();
+    watchJob(job_id, '抓取站点首页', () => {
+      $('.tab[data-p="traffic"]').click();
+      loadClassify();
+    });
+  }catch(e){ toast(e.message, 'err'); }
+};
+
+$('#btnClsImport').onclick = async () => {
+  const dir = $('#clsDir').value.trim();
+  if(!dir) return toast('请填写分类目录的路径', 'err');
+  try{
+    const { job_id } = await api('/api/classify/import', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({directory: dir, account: S.acctFilter})});
+    $('.tab[data-p="scan"]').click();
+    watchJob(job_id, '从目录导入分类', j => {
+      const r = j.result || {};
+      if(r.error) return toast(r.error, 'err');
+      $('.tab[data-p="traffic"]').click();
+      loadClassify();
+      toast(`导入 ${Object.keys(r.mapping || {}).length} 个站点的分类`, 'ok');
+    });
+  }catch(e){ toast(e.message, 'err'); }
+};
+
+$('#btnClsSave').onclick = async () => {
+  const m = S.clsDirty || {};
+  if(!Object.keys(m).length) return toast('没有改动', 'err');
+  try{
+    const r = await api('/api/classify/save', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({mapping: m})});
+    S.clsDirty = {}; $('#clsHint').textContent = `已保存 ${r.saved} 处`;
+    await loadClassify();
+    loadTraffic(false);     // 分类变了，流量页的筛选和汇总要跟着更新
+  }catch(e){ toast(e.message, 'err'); }
 };
 
 /* ---------------- GA 属性自动匹配 ---------------- */

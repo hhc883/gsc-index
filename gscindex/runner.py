@@ -12,7 +12,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
-from . import api, oauth, sources, traffic, webauto
+from . import api, classify, oauth, sources, traffic, webauto
 from .auth import KIND_OAUTH, AccountPool, AuthError
 from .config import Config
 from .store import Store
@@ -964,6 +964,176 @@ class Engine:
         rows.sort(key=lambda r: (r["ok"], r["active_users"]), reverse=True)
         return {"rows": rows, "unmapped": missing,
                 "checked": len(rows), "live": len(hot)}
+
+    # ------------------------------------------------------------------
+    # 站点分类
+    # ------------------------------------------------------------------
+
+    def classify_fetch(self, *, account_name: str = "", only_missing: bool = False,
+                       emit: Emit = _noop) -> dict:
+        """抓各站点首页，并给还没有分类的站点一个建议。
+
+        抓的是**用户自己的网站**，不碰任何 Google 配额。
+        已经有分类的站点只更新标题、**不动分类**——分类要么是从他自己的目录
+        导入的、要么是他手改的，都比关键词规则权威，不能被一次重抓覆盖掉。
+        """
+        sites = [x["site_url"] for x in self.all_sites(account_name=account_name)]
+        known = self.store.meta_all()
+        if only_missing:
+            sites = [s for s in sites if s not in known or not known[s].get("title")]
+        if not sites:
+            emit({"type": "log", "level": "info", "message": "没有需要抓取的站点"})
+            return {"fetched": 0, "failed": 0, "suggested": 0}
+
+        emit({"type": "log", "level": "info",
+              "message": f"开始抓取 {len(sites)} 个站点的首页（访问的是你自己的网站，"
+                         f"不消耗任何 Google 配额）"})
+        emit({"type": "progress", "phase": "classify", "done": 0, "total": len(sites)})
+
+        stats = {"fetched": 0, "failed": 0, "suggested": 0}
+        fails: list[str] = []
+
+        def on_done(m, done, total):
+            if done % 5 == 0 or done == total:
+                emit({"type": "progress", "phase": "classify", "done": done, "total": total})
+
+        metas = classify.fetch_all(sites, concurrency=6,
+                                   timeout=min(15, self.cfg.request_timeout),
+                                   on_done=on_done)
+
+        for site, m in metas.items():
+            cur = known.get(site) or {}
+            if not m.ok:
+                stats["failed"] += 1
+                fails.append(f"{site}：{m.message}")
+                self.store.meta_upsert(site, fetch_ok=0, fetch_msg=m.message)
+                continue
+            stats["fetched"] += 1
+            cat = src = hit = None
+            # 没有分类的、以及**分类只是规则猜的**，都重新算一遍：规则会改进、
+            # 首页标题也会变，猜测就该跟着更新。
+            # 但 import / manual 是权威来源，一律不碰——一次重抓把用户自己
+            # 定的分类覆盖掉，是比没有这个功能更糟的事。
+            if not (cur.get("category") or "").strip() or cur.get("source") == "rule":
+                host = site.replace("https://", "").replace("http://", "").rstrip("/")
+                g, words = classify.suggest(m.title, m.description, host)
+                if g:
+                    cat, src, hit = g, "rule", words
+                    stats["suggested"] += 1
+            self.store.meta_upsert(site, title=m.title, description=m.description,
+                                   category=cat, source=src, matched_on=hit,
+                                   fetch_ok=1, fetch_msg="")
+
+        # 抓失败的逐条报出来。静默跳过的话用户会以为全抓到了，
+        # 而那几个站会一直没有标题、也就一直得不到分类建议。
+        if fails:
+            emit({"type": "log", "level": "warn",
+                  "message": f"⚠ {len(fails)} 个站点的首页没抓到，它们拿不到分类建议："})
+            for f in fails[:10]:
+                emit({"type": "log", "level": "warn", "message": "  " + f})
+        emit({"type": "log", "level": "success" if not fails else "warn",
+              "message": f"抓取完成：成功 {stats['fetched']} · 失败 {stats['failed']}"
+                         f" · 新给出 {stats['suggested']} 条分类建议"})
+        return stats
+
+    def classify_import(self, directory: str, *, account_name: str = "",
+                        emit: Emit = _noop) -> dict:
+        """从「分类目录/站点文件夹」的结构导入分类。
+
+        这是权威来源，直接覆盖规则给的建议。但**近似匹配的结果要单独标出来**：
+        近似匹配本质上是猜，猜错了就是把一个站归进错误的分类，而错误的分类
+        会一路影响后面所有按分类做的筛选和汇总。
+        """
+        from pathlib import Path
+
+        sites = [x["site_url"] for x in self.all_sites(account_name=account_name)]
+        known = self.store.meta_all()
+        is_xlsx = Path(directory).suffix.lower() in (".xlsx", ".xlsm")
+
+        if is_xlsx:
+            # 主表优先：分类就是工作表名，域名是独立一列，逐字匹配即可。
+            # 目录那条路要拿站名去猜，已经出过一次"站改名导致对不上"的事。
+            res = classify.import_from_xlsx(directory, sites)
+        else:
+            titles = {s: (known.get(s) or {}).get("title") or "" for s in sites}
+            res = classify.import_from_dir(directory, sites, titles)
+        if res.get("error"):
+            emit({"type": "log", "level": "error", "message": res["error"]})
+            return res
+
+        for site, cat in res["mapping"].items():
+            self.store.meta_upsert(site, category=cat, source="import", matched_on="")
+
+        if is_xlsx:
+            # 表里通常还有 GSC 里没有的站（域名买了、站还没建完）。也存下来，
+            # 等它进了 Search Console 分类就是现成的，不用再导一次。
+            for dom, cat in (res.get("future") or {}).items():
+                self.store.meta_upsert("https://" + dom + "/", category=cat,
+                                       source="import", matched_on="")
+            emit({"type": "log", "level": "success",
+                  "message": f"从主表导入：表里共 {res['total_rows']} 个站点，"
+                             f"其中 {len(res['mapping'])} 个在 GSC 里（已应用），"
+                             f"另 {len(res.get('future') or {})} 个还没进 GSC（先存着）"})
+            for sk in res.get("skipped_sheets") or []:
+                emit({"type": "log", "level": "warn",
+                      "message": f"工作表「{sk['sheet']}」跳过：{sk['why']}"})
+        else:
+            emit({"type": "log", "level": "success",
+                  "message": f"从目录导入 {len(res['mapping'])} 个站点的分类："
+                             f"精确 {len(res['exact'])} · 近似 {len(res['fuzzy'])}"})
+            for r in res["fuzzy"]:
+                emit({"type": "log", "level": "warn",
+                      "message": f"近似匹配，请核对：[{r['category']}] {r['folder']} → {r['site']}"})
+            for r in res["unmatched"]:
+                emit({"type": "log", "level": "warn",
+                      "message": f"目录里有、但对不上任何 GSC 站点：[{r['category']}] {r['folder']}"})
+
+        for c in res.get("conflicts") or []:
+            emit({"type": "log", "level": "error",
+                  "message": "同一个站被多个分类认领：" + str(c)})
+        left = res.get("sites_without_row") or res.get("sites_without_folder") or []
+        if left:
+            emit({"type": "log", "level": "warn",
+                  "message": f"⚠ {len(left)} 个 GSC 站点在这份数据里没有记录，"
+                             f"分类保持原样：" + "、".join(left[:5])})
+        return res
+
+    def classify_overview(self, *, account_name: str = "") -> dict:
+        """分类总览：每个站点的标题、分类、来源，以及还没分类的有哪些。"""
+        sites = [x["site_url"] for x in self.all_sites(account_name=account_name)]
+        known = self.store.meta_all()
+        rows = []
+        for s in sites:
+            m = known.get(s) or {}
+            rows.append({
+                "site": s,
+                "title": m.get("title") or "",
+                "description": m.get("description") or "",
+                "category": m.get("category") or "",
+                "source": m.get("source") or "",
+                "matched_on": m.get("matched_on") or "",
+                "fetch_ok": bool(m.get("fetch_ok")),
+                "fetch_msg": m.get("fetch_msg") or "",
+                "updated_at": m.get("updated_at") or "",
+            })
+        # 未分类的排最前面——放后面等于藏起来
+        order = {"": 0, "rule": 1, "import": 2, "manual": 2}
+        rows.sort(key=lambda r: (bool(r["category"]), order.get(r["source"], 3), r["site"]))
+        # 两套计数，分开给。库里还存着主表里那些"还没进 GSC"的站点，
+        # 如果只报一个总数，界面会显示"汽车 51"而表格里只有 14 行，
+        # 看起来像表格漏了 37 个——其实那 37 个根本还不在 Search Console 里。
+        counts: dict[str, int] = {}
+        for r in rows:
+            if r["category"]:
+                counts[r["category"]] = counts.get(r["category"], 0) + 1
+        return {
+            "rows": rows,
+            "categories": classify.CATEGORIES,
+            "counts": counts,
+            "counts_all": self.store.meta_categories(),
+            "uncategorized": [r["site"] for r in rows if not r["category"]],
+            "by_rule": [r["site"] for r in rows if r["source"] == "rule"],
+        }
 
     def ga_discover(self, *, account_name: str = "", emit: Emit = _noop) -> dict:
         """列出账号下全部 GA4 属性，并自动跟 GSC 站点配对。

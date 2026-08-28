@@ -19,7 +19,7 @@ from fastapi import Body, FastAPI, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from gscindex import config as config_mod
-from gscindex import oauth, sources, traffic, webauto
+from gscindex import classify, oauth, sources, traffic, webauto
 from gscindex.auth import KIND_OAUTH, AccountPool
 from gscindex.runner import Engine
 from gscindex.store import Store
@@ -577,6 +577,10 @@ def api_traffic(
         # 不能让界面从 rows 反推：rows 是筛选后的结果，而且从没拉过的站点在
         # site_traffic 里连行都没有，怎么放宽条件都查不出来。
         "sites_in_window": store.traffic_sites(w),
+        # 站点分类。放进这个响应里，界面就能在本地做分类筛选和汇总，
+        # 不用为了一个下拉框再打一次请求。
+        "site_category": {k: (v.get("category") or "")
+                          for k, v in store.meta_all().items()},
         "metric": metric,
         "analytics": engine.analytics_ready(),
         "ga_mapped": len(cfg.ga_property_map or {}),
@@ -639,6 +643,62 @@ def api_traffic_realtime(body: dict = Body(...)):
     account = (body.get("account") or "").strip()
     top = max(1, min(int(body.get("top") or 5), 20))
     return engine.traffic_realtime(list(sites), account_name=account, top=top)
+
+
+@app.get("/api/classify")
+def api_classify(account: str = ""):
+    """站点分类总览。未分类的排最前面。"""
+    return engine.classify_overview(account_name=account)
+
+
+@app.post("/api/classify/fetch")
+def api_classify_fetch(body: dict = Body(...)):
+    """抓各站点首页并给未分类的站点建议分类。访问的是用户自己的网站，不碰 Google 配额。"""
+    account = (body.get("account") or "").strip()
+    only_missing = bool(body.get("only_missing"))
+
+    def run(emit, _stop):
+        return engine.classify_fetch(account_name=account,
+                                     only_missing=only_missing, emit=emit)
+
+    return {"job_id": start_job("classify", run).id}
+
+
+@app.post("/api/classify/import")
+def api_classify_import(body: dict = Body(...)):
+    """从「分类目录/站点文件夹」导入分类。这是权威来源，会覆盖规则建议。"""
+    directory = (body.get("directory") or "").strip()
+    account = (body.get("account") or "").strip()
+    if not directory:
+        return JSONResponse({"error": "请填写分类目录的路径"}, status_code=400)
+
+    def run(emit, _stop):
+        return engine.classify_import(directory, account_name=account, emit=emit)
+
+    return {"job_id": start_job("classify_import", run).id}
+
+
+@app.post("/api/classify/save")
+def api_classify_save(body: dict = Body(...)):
+    """保存人工指定的分类。
+
+    人工指定一律记成 source=manual，跟规则建议区分开——界面要能看出
+    哪些是人定的（可信）、哪些还是机器猜的（该复核）。
+    """
+    mapping = body.get("mapping")
+    if not isinstance(mapping, dict):
+        return JSONResponse({"error": "mapping 必须是对象"}, status_code=400)
+    allowed = set(classify.CATEGORIES)
+    saved, rejected = 0, []
+    for site, cat in mapping.items():
+        cat = (str(cat) if cat is not None else "").strip()
+        if cat and cat not in allowed:
+            rejected.append({"site": site, "category": cat})
+            continue
+        store.meta_upsert(site, category=cat, source="manual" if cat else "",
+                          matched_on="")
+        saved += 1
+    return {"ok": True, "saved": saved, "rejected": rejected}
 
 
 @app.post("/api/ga/discover")

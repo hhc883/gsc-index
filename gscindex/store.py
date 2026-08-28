@@ -17,6 +17,9 @@
 * traffic_daily  —— 按天的趋势数据
 * page_traffic   —— 按页面拆分，跟 site_urls 连接后能找出"已收录但零展现"的页面
 * query_traffic  —— 按搜索词拆分，这是 GSC 独有、GA 看不到的数据
+* site_meta      —— 站点的首页标题/描述和**分类**。分类的 source 字段区分
+                    "从目录导入/人工指定"（权威）和"关键词规则建议"（猜测），
+                    界面据此决定哪些需要复核。
 """
 
 from __future__ import annotations
@@ -128,6 +131,21 @@ CREATE TABLE IF NOT EXISTS query_traffic (
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (site, query, window_days)
 );
+CREATE TABLE IF NOT EXISTS site_meta (
+    site        TEXT PRIMARY KEY,
+    title       TEXT,          -- 首页 <title>
+    description TEXT,          -- 首页 meta description
+    category    TEXT,          -- 站点分类，空串表示未分类
+    -- 这个分类是怎么来的：import(从目录导入) / manual(手改) / rule(关键词建议)。
+    -- 必须记下来：导入和手改是权威的，规则建议只是猜测，界面要分开显示，
+    -- 否则用户没法判断哪些该复核。
+    source      TEXT,
+    matched_on  TEXT,          -- 规则建议时命中了哪些词，给人判断依据用
+    fetch_ok    INTEGER NOT NULL DEFAULT 0,
+    fetch_msg   TEXT,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_site_meta_cat ON site_meta(category);
 CREATE INDEX IF NOT EXISTS idx_log_ts ON log(ts);
 CREATE INDEX IF NOT EXISTS idx_urls_submitted ON urls(last_submitted);
 CREATE INDEX IF NOT EXISTS idx_site_urls_site ON site_urls(site, index_state);
@@ -603,6 +621,54 @@ class Store:
                      FROM site_traffic GROUP BY window_days ORDER BY window_days"""
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ---------- 站点分类 ----------
+
+    def meta_upsert(self, site: str, *, title=None, description=None,
+                    category=None, source=None, matched_on=None,
+                    fetch_ok=None, fetch_msg=None) -> None:
+        """写入站点元信息。只更新明确传了值的字段。
+
+        抓首页和定分类是两件独立的事：重抓首页不该把用户手改的分类冲掉，
+        改分类也不该清掉已经抓到的标题。所以这里用 COALESCE 逐字段合并，
+        没传的一律保持原样。
+        """
+        now = _now()
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO site_meta
+                     (site, title, description, category, source, matched_on,
+                      fetch_ok, fetch_msg, updated_at)
+                   -- fetch_ok 是 NOT NULL，而"只改分类"这种调用不会传它。
+                   -- DEFAULT 只在省略该列时生效，显式传 NULL 照样违反约束，
+                   -- 所以这里必须兜一层 COALESCE。
+                   VALUES (?,?,?,?,?,?,COALESCE(?,0),?,?)
+                   ON CONFLICT(site) DO UPDATE SET
+                     title       = COALESCE(excluded.title,       site_meta.title),
+                     description = COALESCE(excluded.description, site_meta.description),
+                     category    = COALESCE(excluded.category,    site_meta.category),
+                     source      = COALESCE(excluded.source,      site_meta.source),
+                     matched_on  = COALESCE(excluded.matched_on,  site_meta.matched_on),
+                     fetch_ok    = COALESCE(excluded.fetch_ok,    site_meta.fetch_ok),
+                     fetch_msg   = COALESCE(excluded.fetch_msg,   site_meta.fetch_msg),
+                     updated_at  = excluded.updated_at""",
+                (site, title, description, category, source, matched_on,
+                 fetch_ok, fetch_msg, now),
+            )
+            self.conn.commit()
+
+    def meta_all(self) -> dict[str, dict]:
+        with self._lock:
+            return {r["site"]: dict(r)
+                    for r in self.conn.execute("SELECT * FROM site_meta")}
+
+    def meta_categories(self) -> dict[str, int]:
+        """各分类下有多少站点。空分类不会出现在这里，由界面补齐。"""
+        with self._lock:
+            return {r["category"]: r["n"] for r in self.conn.execute(
+                "SELECT COALESCE(category,'') AS category, COUNT(*) AS n "
+                "FROM site_meta WHERE COALESCE(category,'') <> '' GROUP BY category"
+            )}
 
     def traffic_sites(self, window_days: int) -> list[str]:
         """这个窗口下**有记录**的站点清单（不管那次拉成功没有）。
