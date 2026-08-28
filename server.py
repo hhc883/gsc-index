@@ -154,7 +154,19 @@ def start_job(kind: str, fn) -> Job:
 
 @app.get("/")
 def index():
-    return FileResponse(WEB / "index.html")
+    """整个界面就这一个 HTML 文件（CSS 和 JS 都内联在里面）。
+
+    必须显式禁用缓存。FileResponse 默认不发 Cache-Control，浏览器会按
+    启发式规则自己决定缓存多久——结果是升级了代码、重启了服务，打开还是旧界面，
+    得手动强制刷新才行。用户根本不会想到是缓存，只会觉得"更新没生效"。
+
+    no-cache 不是"不缓存"，是"每次都必须回来问一下有没有变"；
+    没变的话服务端回 304，浏览器仍然用本地那份，并不浪费流量。
+    """
+    return FileResponse(
+        WEB / "index.html",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 @app.get("/favicon.ico")

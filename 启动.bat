@@ -1,21 +1,34 @@
 @echo off
 chcp 65001 >nul 2>&1
 cd /d "%~dp0"
-title GSC ç´¢å¼•æäº¤å™¨
+title GSC ÊÕÂ¼ÖúÊÖ
 
 where python >nul 2>&1
 if errorlevel 1 goto NOPY
 
 if not exist ".venv\Scripts\python.exe" (
   echo.
-  echo   é¦–æ¬¡è¿è¡Œï¼Œæ­£åœ¨å‡†å¤‡è¿è¡ŒçŽ¯å¢ƒï¼Œè¯·ç¨å€™...
+  echo   Ê×´ÎÔËÐÐ£¬ÕýÔÚ×¼±¸ÔËÐÐ»·¾³£¬ÇëÉÔºò...
   echo.
   python -m venv .venv
   if errorlevel 1 goto NOVENV
   ".venv\Scripts\python.exe" -m pip install --upgrade pip -q
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt -q
   if errorlevel 1 goto NODEPS
-  echo   çŽ¯å¢ƒå‡†å¤‡å®Œæˆã€‚
+  echo   »·¾³×¼±¸Íê³É¡£
+)
+
+rem Ã¿´ÎÆô¶¯¶¼verifyÒ»±éÒÀÀµ×°ÆëÃ»ÓÐ¡£
+rem ÒÔÇ°Ö»ÔÚÊ×´Î½¨ÐéÄâ»·¾³Ê±×°£¬Ö®ºó requirements.txt ¼ÓÁËÐÂÒÀÀµÒ²²»»á²¹×°£¬
+rem ÀÏÓÃ»§Éý¼¶ºó»áÖ±½Ó±ÀÔÚ import ÉÏ£¬¶øÇÒ±¨´í¿´ÆðÀ´¸ú°æ±¾¸üÐÂºÁÎÞ¹ØÏµ¡£
+".venv\Scripts\python.exe" -c "import fastapi,uvicorn,requests,google.auth,playwright,openpyxl" >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo   ¼ì²âµ½ÓÐÒÀÀµÈ±Ê§»ò°æ±¾¸üÐÂ£¬ÕýÔÚ²¹×°...
+  ".venv\Scripts\python.exe" -m pip install -r requirements.txt -q
+  if errorlevel 1 goto NODEPS
+  echo   ²¹×°Íê³É¡£
+  echo.
 )
 
 ".venv\Scripts\python.exe" server.py
@@ -23,18 +36,18 @@ goto END
 
 :NOPY
 echo.
-echo   æ²¡æœ‰æ£€æµ‹åˆ° Pythonã€‚è¯·å…ˆå®‰è£… Python 3.10 æˆ–æ›´é«˜ç‰ˆæœ¬ï¼š
+echo   Ã»ÓÐ¼ì²âµ½ Python£¬ÇëÏÈ°²×° Python 3.10 »ò¸ü¸ß°æ±¾£º
 echo   https://www.python.org/downloads/
-echo   å®‰è£…æ—¶åŠ¡å¿…å‹¾é€‰ "Add Python to PATH"ã€‚
+echo   °²×°Ê±Îñ±Ø¹´Ñ¡ "Add Python to PATH"¡£
 goto END
 
 :NOVENV
-echo   åˆ›å»ºè™šæ‹ŸçŽ¯å¢ƒå¤±è´¥ï¼Œè¯·æ£€æŸ¥ Python å®‰è£…æ˜¯å¦å®Œæ•´ã€‚
+echo   ´´½¨ÐéÄâ»·¾³Ê§°Ü£¬Çë¼ì²é Python °²×°ÊÇ·ñÍêÕû¡£
 goto END
 
 :NODEPS
-echo   ä¾èµ–å®‰è£…å¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œè¿žæŽ¥åŽé‡è¯•ã€‚
-echo   å¦‚æžœåœ¨å›½å†…ï¼Œå¯ä»¥è¯•è¯•æ¢æºï¼š
+echo   ÒÀÀµ°²×°Ê§°Ü£¬Çë¼ì²éÍøÂçÁ¬½ÓºóÖØÊÔ¡£
+echo   Èç¹ûÔÚ¹úÄÚ£¬¿ÉÒÔÊÔÊÔ»»Ô´£º
 echo     .venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 goto END
 
